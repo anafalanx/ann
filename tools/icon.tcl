@@ -24,7 +24,7 @@ set TILE   {242 242 242}   ;# #F2F2F2 the page (ann::C(bg), same as els::PAGE)
 set EDGE   {212 212 212}   ;# #D4D4D4 hairline ring so the tile reads on white
 set INK    {26 26 26}      ;# #1A1A1A bow + shaft
 set FERR   {150 170 198}   ;# #96AAC6 collar band (els's ferrule blue)
-set ACCENT {118 238 0}     ;# #76EE00 chartreuse2 — the key's bit (els uses red)
+set ACCENT {0 139 0}       ;# #008B00 green4 — the key's bit (els uses red)
 set EDGEW  3               ;# edge-ring width in 256-scale px
 
 proc clamp {x lo hi} { expr {$x < $lo ? $lo : ($x > $hi ? $hi : $x)} }

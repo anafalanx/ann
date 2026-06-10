@@ -53,17 +53,17 @@ namespace eval ann {
     variable sysmenu_hooked 0          ;# titlebar-icon menu hook installed once
 
     # One fixed look, matching els (its DESIGN palette): a calm grey page,
-    # near-black ink, flat white fields with hairlines, ONE accent flourish (the
-    # caret), and a cool calm selection tint. ann's accent is CHARTREUSE2
-    # #76EE00 (owner decision via the x colors browser; els owns red #DC322F) —
-    # the icon's key teeth carry the same green. accentText is chartreuse4:
-    # #76EE00 on the light page is ~1.4:1 contrast, unreadable as TEXT, so the
-    # update notice and hints use the darker shade. Errors stay red: semantics,
-    # not branding.
+    # near-black ink, flat white fields with hairlines, ONE accent flourish, and
+    # a cool calm selection tint. ann's accent is GREEN4 #008B00 (owner
+    # decision; els owns red #DC322F) — chosen over the Solarized green #859900
+    # and chartreuse2 precisely because at ~4.4:1 on the page it matches els
+    # red's contrast class, so ONE color serves caret, icon teeth, update
+    # notice and hints alike (the els one-flourish discipline, no text shade
+    # split). Errors stay red: semantics, not branding.
     variable C
     array set C {
         bg "#F2F2F2"  panel "#FFFFFF"  ink "#1A1A1A"  muted "#767676"
-        accent "#76EE00"  accentText "#458B00"  good "#3C8A50"  bad "#DC322F"
+        accent "#008B00"  accentText "#008B00"  good "#3C8A50"  bad "#DC322F"
         sel "#D6E2F2"  hair "#D9D9D9"  focus "#BFCFE3"
     }
 }
