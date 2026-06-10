@@ -53,12 +53,15 @@ namespace eval ann {
     variable sysmenu_hooked 0          ;# titlebar-icon menu hook installed once
 
     # One fixed look, matching els (its DESIGN palette): a calm grey page,
-    # near-black ink, flat white fields with hairlines, ONE red flourish (the
-    # caret), and a cool calm selection tint.
+    # near-black ink, flat white fields with hairlines, ONE accent flourish (the
+    # caret), and a cool calm selection tint. ann's accent is Solarized BLUE
+    # #268BD2 — the family sibling of els's Solarized red #DC322F — so the two
+    # apps share a look but never a color (owner decision; the icon's key bit
+    # carries the same blue). Errors stay red: that is semantics, not branding.
     variable C
     array set C {
         bg "#F2F2F2"  panel "#FFFFFF"  ink "#1A1A1A"  muted "#767676"
-        accent "#DC322F"  good "#3C8A50"  bad "#DC322F"  sel "#D6E2F2"
+        accent "#268BD2"  good "#3C8A50"  bad "#DC322F"  sel "#D6E2F2"
         hair "#D9D9D9"  focus "#BFCFE3"
     }
 }

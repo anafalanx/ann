@@ -696,8 +696,10 @@ One fixed, polished look. No themes, no skins, no layout options.
 > (`wm overrideredirect 0`, still `-topmost`; the X button hides, quit stays
 > explicit per §10.2) carrying the **real ann icon** (`wm iconphoto -default`,
 > not Tk's feather); the look matches **els** (calm grey `#F2F2F2` page,
-> near-black ink, flat white fields with hairlines, the single red `#DC322F`
-> caret, `#D6E2F2` selection, Segoe UI chrome) instead of the dark theme; the
+> near-black ink, flat white fields with hairlines, ONE accent flourish — the
+> caret in ann's own Solarized blue `#268BD2` (els owns red `#DC322F`; errors
+> keep red as semantics) — `#D6E2F2` selection, Segoe UI chrome) instead of the
+> dark theme; the
 > result **list rows use a compact font** (name 8 pt / subtitle 5 pt — the panel
 > and dialogs keep 12/9); the list keeps the **first 50 results behind an x-row
 > viewport** (`result_limit` rows of widgets — the §9.4 virtualization holds;

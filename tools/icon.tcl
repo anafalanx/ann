@@ -1,7 +1,15 @@
 #!/usr/bin/env tclsh
-# tools/icon.tcl -- generate the ann app icon (a search lens on a dark rounded
-# tile) into resources/icon*.png. Pure photo-image pixel math with signed-distance
-# anti-aliasing, so it is deterministic and needs no mapped window.
+# tools/icon.tcl -- generate the ann app icon into resources/icon*.png.
+#
+# The KEY on the launcher's own page, in the els icon grammar (els tools/icon.tcl,
+# "the awl on the editor's own page"): a light rounded tile in the app's page
+# grey with a hairline edge ring, an ink object built from a few primitives, a
+# steel-blue collar band, and exactly ONE accent at the business end — for ann
+# that is the key's bit (the part that opens things), in ann's accent blue.
+# ann is a keystroke launcher; the key is the object that opens everything else.
+#
+# Pure photo-image pixel math with signed-distance anti-aliasing: deterministic,
+# no mapped window needed.
 #
 #   wish90.exe tools/icon.tcl            # writes resources/icon.png + 32 + 16
 #
@@ -11,10 +19,13 @@
 package require Tk
 wm withdraw .
 
-# --- palette (the one fixed dark look, DESIGN §9.9) --------------------------
-set BG    {22 24 29}      ;# #16181D dark tile
-set RING  {230 230 230}   ;# light lens ring
-set ACCENT {90 160 242}   ;# #5AA0F2 calm blue (lens glass + handle)
+# --- palette (ann.tcl's els-derived look; accent differentiates from els) -----
+set TILE   {242 242 242}   ;# #F2F2F2 the page (ann::C(bg), same as els::PAGE)
+set EDGE   {212 212 212}   ;# #D4D4D4 hairline ring so the tile reads on white
+set INK    {26 26 26}      ;# #1A1A1A bow + shaft
+set FERR   {150 170 198}   ;# #96AAC6 collar band (els's ferrule blue)
+set ACCENT {38 139 210}    ;# #268BD2 ann's blue — the key's bit (els uses red)
+set EDGEW  3               ;# edge-ring width in 256-scale px
 
 proc clamp {x lo hi} { expr {$x < $lo ? $lo : ($x > $hi ? $hi : $x)} }
 proc smooth {edge0 edge1 x} {
@@ -36,43 +47,74 @@ proc sd_rrect {px py cx cy hw hh r} {
     set mn [expr {max($qx,$qy)<0?max($qx,$qy):0}]
     expr {hypot($ax,$ay)+$mn-$r}
 }
+# capsule (segment with radius) signed distance
+proc sd_cap {px py ax ay bx by r} {
+    set vx [expr {$bx-$ax}] ; set vy [expr {$by-$ay}]
+    set wx [expr {$px-$ax}] ; set wy [expr {$py-$ay}]
+    set d2 [expr {$vx*$vx+$vy*$vy}]
+    set t [expr {$d2 > 0 ? [clamp [expr {($wx*$vx+$wy*$vy)/$d2}] 0.0 1.0] : 0.0}]
+    expr {hypot($px-($ax+$t*$vx),$py-($ay+$t*$vy)) - $r}
+}
 
 proc render {N path} {
-    global BG RING ACCENT
+    global TILE EDGE INK FERR ACCENT EDGEW
     set img [image create photo -width $N -height $N]
     set s [expr {$N/256.0}]
-    # geometry in 256-space, scaled by s
-    set cx [expr {110*$s}] ; set cy [expr {110*$s}]   ;# lens center
-    set R  [expr {66*$s}]                              ;# lens outer radius
-    set ring [expr {16*$s}]                            ;# ring thickness
-    # handle: a thick segment from lens edge to lower-right
-    set hx0 [expr {$cx+($R-4*$s)*0.7071}] ; set hy0 [expr {$cy+($R-4*$s)*0.7071}]
-    set hx1 [expr {200*$s}] ; set hy1 [expr {200*$s}]
-    set hw [expr {15*$s}]                              ;# handle half-width
+
+    # --- the key, laid on the 45-degree diagonal like els's awl ---------------
+    # axis u = (cos45, sin45); the bow sits upper-left, the bit lower-right
+    set ux 0.70710678 ; set uy 0.70710678
+    set qx -0.70710678 ; set qy 0.70710678      ;# perpendicular: teeth side (down-left)
+    set bx [expr {88*$s}] ; set by [expr {88*$s}]   ;# bow center
+    proc P {t} {                                  ;# point on the axis, 256-scale t
+        upvar bx bx by by ux ux uy uy s s
+        list [expr {$bx+$ux*$t*$s}] [expr {$by+$uy*$t*$s}]
+    }
+    set rBow   [expr {33*$s}]   ;# bow outer radius
+    set rHole  [expr {14*$s}]   ;# bow hole radius
+    set rShaft [expr {8.5*$s}]  ;# shaft half-width
+    lassign [P 28]  sx0 sy0     ;# shaft start (under the bow)
+    lassign [P 126] sx1 sy1     ;# shaft tip
+    lassign [P 40]  fx0 fy0     ;# collar band
+    lassign [P 50]  fx1 fy1
+    lassign [P 96]  t1x t1y     ;# tooth 1 (longer)
+    lassign [P 116] t2x t2y     ;# tooth 2
+    set tooth1 [expr {21*$s}] ; set tooth2 [expr {15*$s}] ; set rTooth [expr {6.5*$s}]
+
     for {set y 0} {$y < $N} {incr y} {
         set row {}
         for {set x 0} {$x < $N} {incr x} {
             set fx [expr {$x+0.5}] ; set fy [expr {$y+0.5}]
-            # tile background (transparent outside the rounded tile)
+            # tile (transparent outside the rounded square) + hairline edge ring
             set dtile [sd_rrect $fx $fy [expr {$N/2.0}] [expr {$N/2.0}] \
                           [expr {120*$s}] [expr {120*$s}] [expr {46*$s}]]
             set aTile [smooth 1.0 -1.0 $dtile]
-            set col $BG ; set a $aTile
-            # lens glass fill (accent, faint) inside ring
-            set dl [expr {hypot($fx-$cx,$fy-$cy)-$R}]
-            set glass [smooth 1.0 -1.0 [expr {$dl+$ring}]]
-            if {$glass > 0} { set col [mix $col $ACCENT [expr {0.20*$glass}]] }
-            # lens ring (light annulus)
-            set ringcov [expr {[smooth 1.0 -1.0 $dl]*[smooth -1.0 1.0 [expr {$dl+$ring}]]}]
-            if {$ringcov > 0} { set col [mix $col $RING $ringcov] ; set a [expr {max($a,$ringcov)}] }
-            # handle (accent capsule)
-            set vx [expr {$hx1-$hx0}] ; set vy [expr {$hy1-$hy0}]
-            set wx [expr {$fx-$hx0}]  ; set wy [expr {$fy-$hy0}]
-            set tt [expr {($vx*$vx+$vy*$vy)>0 ? ($wx*$vx+$wy*$vy)/($vx*$vx+$vy*$vy) : 0}]
-            set tt [clamp $tt 0.0 1.0]
-            set dh [expr {hypot($fx-($hx0+$tt*$vx),$fy-($hy0+$tt*$vy))-$hw}]
-            set hcov [smooth 1.0 -1.0 $dh]
-            if {$hcov > 0} { set col [mix $col $ACCENT $hcov] ; set a [expr {max($a,$hcov)}] }
+            set col $TILE ; set a $aTile
+            set ringcov [expr {[smooth 1.0 -1.0 $dtile]*[smooth -1.0 1.0 [expr {$dtile+$EDGEW*$s}]]}]
+            if {$ringcov > 0} { set col [mix $col $EDGE $ringcov] }
+            # bow: ink ring (outer disc minus hole, hole repainted as tile)
+            set dBow [expr {hypot($fx-$bx,$fy-$by)-$rBow}]
+            set cBow [smooth 1.0 -1.0 $dBow]
+            if {$cBow > 0} { set col [mix $col $INK $cBow] }
+            set dHole [expr {hypot($fx-$bx,$fy-$by)-$rHole}]
+            set cHole [smooth 1.0 -1.0 $dHole]
+            if {$cHole > 0} { set col [mix $col $TILE $cHole] }
+            # shaft (ink capsule along the axis)
+            set dSh [sd_cap $fx $fy $sx0 $sy0 $sx1 $sy1 $rShaft]
+            set cSh [smooth 1.0 -1.0 $dSh]
+            if {$cSh > 0} { set col [mix $col $INK $cSh] }
+            # collar band (els's ferrule blue, slightly wider than the shaft)
+            set dFe [sd_cap $fx $fy $fx0 $fy0 $fx1 $fy1 [expr {$rShaft+2.5*$s}]]
+            set cFe [smooth 1.0 -1.0 $dFe]
+            if {$cFe > 0} { set col [mix $col $FERR $cFe] }
+            # the bit: two accent teeth hanging off one side near the tip
+            set dT1 [sd_cap $fx $fy $t1x $t1y \
+                        [expr {$t1x+$qx*$tooth1}] [expr {$t1y+$qy*$tooth1}] $rTooth]
+            set dT2 [sd_cap $fx $fy $t2x $t2y \
+                        [expr {$t2x+$qx*$tooth2}] [expr {$t2y+$qy*$tooth2}] $rTooth]
+            set dT [expr {min($dT1,$dT2)}]
+            set cT [smooth 1.0 -1.0 $dT]
+            if {$cT > 0} { set col [mix $col $ACCENT $cT] }
             lassign $col r g b
             set A [clamp [expr {int(round($a*255))}] 0 255]
             lappend row [format "#%02x%02x%02x%02x" $r $g $b $A]
