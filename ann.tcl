@@ -1622,6 +1622,14 @@ proc ann::hook_titlebar_menu {} {
         ann::log WARN "titlebar menu hook failed: $e"
         return
     }
+    # No taskbar button (owner decision, §9.1): a hidden owner keeps the popup
+    # off the taskbar while preserving the normal titlebar (the tray is ann's
+    # presence; Alt-Tab still lists the window while it is up).
+    if {[ann::has annplat::own_window]} {
+        if {[catch {annplat::own_window $frame} e]} {
+            ann::log WARN "taskbar detach failed: $e"
+        }
+    }
     set sysmenu_hooked 1
 }
 

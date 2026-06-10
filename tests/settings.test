@@ -257,3 +257,11 @@ test pri-1.4 {pairs in the option set both path and tier} -constraints hasindex 
     annindex::set_roots [list $::ANN_FSROOT]
     list [llength $roots] [lindex $roots 0 1]
 } -result {1 1}
+
+# ---- no taskbar button: the popup is OWNED by a hidden window (§9.1) ----------
+test taskbar-1.1 {own_window installs a hidden owner; the frame reports it} -constraints hasext -body {
+    wm deiconify . ; update
+    set frame [wm frame .]
+    set owner [annplat::own_window $frame]
+    list [expr {$owner != 0}] [expr {[annplat::window_owner $frame] == $owner}]
+} -result {1 1}

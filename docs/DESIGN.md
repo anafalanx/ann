@@ -707,7 +707,9 @@ One fixed, polished look. No themes, no skins, no layout options.
 > conflict):** the window has a **real titlebar** reading `ann <version>`
 > (`wm overrideredirect 0`, still `-topmost`; the X button hides, quit stays
 > explicit per §10.2) carrying the **real ann icon** (`wm iconphoto -default`,
-> not Tk's feather); the look matches **els** (calm grey `#F2F2F2` page,
+> not Tk's feather); the window has **no taskbar button** (a hidden owner via
+> `annplat::own_window` — owned toplevels get none, while keeping the normal
+> caption the in-icon menu needs; the tray is ann's presence); the look matches **els** (calm grey `#F2F2F2` page,
 > near-black ink, flat white fields with hairlines, ONE accent flourish — the
 > caret in ann's own green4 `#008B00` (els owns red `#DC322F`; one color for
 > ALL accent uses — its ~4.4:1 page contrast matches els red's class; errors

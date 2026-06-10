@@ -464,6 +464,48 @@ static LRESULT CALLBACK SysMenuProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return CallWindowProcW(gSysOld, h, m, w, l);
 }
 
+/* ---- keep ann OFF the taskbar (owner trick, §9.1) ----------------------------
+ * Windows shows taskbar buttons only for UNOWNED top-level windows. Giving the
+ * popup a hidden owner removes the button while keeping the normal titlebar
+ * (caption icon + min/close — unlike WS_EX_TOOLWINDOW, which would also strip
+ * the icon the in-icon menu hangs off). The owner is one tiny never-shown
+ * popup window, created on first use and kept for the process lifetime. */
+static HWND gHiddenOwner = NULL;
+
+/* annplat::own_window <hwnd> — returns the owner hwnd */
+static int Plat_OwnWindow(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[]) {
+    (void) cd;
+    if (objc != 2) { Tcl_WrongNumArgs(ip, 1, objv, "hwnd"); return TCL_ERROR; }
+    HWND h;
+    if (GetHwnd(ip, objv[1], &h) != TCL_OK) return TCL_ERROR;
+    if (!IsWindow(h)) { Tcl_SetObjResult(ip, Tcl_NewStringObj("no such window", -1)); return TCL_ERROR; }
+    if (!gHiddenOwner) {
+        gHiddenOwner = CreateWindowExW(0, L"STATIC", L"ann_owner", WS_POPUP,
+                                       0, 0, 0, 0, NULL, NULL,
+                                       GetModuleHandleW(NULL), NULL);
+        if (!gHiddenOwner) {
+            Tcl_SetObjResult(ip, Tcl_NewStringObj("owner window creation failed", -1));
+            return TCL_ERROR;
+        }
+    }
+    SetWindowLongPtrW(h, GWLP_HWNDPARENT, (LONG_PTR) gHiddenOwner);
+    /* poke the frame so the shell re-evaluates the (now absent) taskbar button */
+    SetWindowPos(h, NULL, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    Tcl_SetObjResult(ip, Tcl_NewWideIntObj((Tcl_WideInt)(intptr_t) gHiddenOwner));
+    return TCL_OK;
+}
+
+/* annplat::window_owner <hwnd> — GetWindow(GW_OWNER), 0 = unowned (tests) */
+static int Plat_WindowOwner(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[]) {
+    (void) cd;
+    if (objc != 2) { Tcl_WrongNumArgs(ip, 1, objv, "hwnd"); return TCL_ERROR; }
+    HWND h;
+    if (GetHwnd(ip, objv[1], &h) != TCL_OK) return TCL_ERROR;
+    Tcl_SetObjResult(ip, Tcl_NewWideIntObj((Tcl_WideInt)(intptr_t) GetWindow(h, GW_OWNER)));
+    return TCL_OK;
+}
+
 /* annplat::post_message <hwnd> <msg> <wparam> <lparam> — plain PostMessageW
  * (tests + tooling; twapi's raw wrappers want their own typed pointers). */
 static int Plat_PostMessage(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[]) {
@@ -589,6 +631,8 @@ int Annplat_Init(Tcl_Interp *ip) {
     Tcl_CreateObjCommand(ip, "::annplat::expand_env",          Plat_ExpandEnv,        NULL, NULL);
     Tcl_CreateObjCommand(ip, "::annplat::hook_sysmenu",        Plat_HookSysmenu,      NULL, NULL);
     Tcl_CreateObjCommand(ip, "::annplat::post_message",        Plat_PostMessage,      NULL, NULL);
+    Tcl_CreateObjCommand(ip, "::annplat::own_window",          Plat_OwnWindow,        NULL, NULL);
+    Tcl_CreateObjCommand(ip, "::annplat::window_owner",        Plat_WindowOwner,      NULL, NULL);
     Tcl_PkgProvideEx(ip, "annplat", "0.1", NULL);
     return TCL_OK;
 }
