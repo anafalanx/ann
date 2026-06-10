@@ -667,7 +667,7 @@ proc ann::build {} {
     # bar has its own font so the row shrink never touches it.
     catch {font create annName    -family "Segoe UI" -size 12}
     catch {font create annSub     -family "Segoe UI" -size 9}
-    catch {font create annQuery   -family "Segoe UI" -size 15}
+    catch {font create annQuery   -family "Segoe UI" -size 13}
     catch {font create annRowName -family "Segoe UI" -size 8}
     catch {font create annRowSub  -family "Segoe UI" -size 5}
     catch {font create annStatus  -family "Segoe UI" -size 8}
