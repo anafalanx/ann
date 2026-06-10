@@ -716,8 +716,62 @@ proc ann::build_statusbar {} {
     pack .status.in -fill x
     label .status.in.info -bg $C(bg) -fg $C(muted) -anchor e -font annStatus -text ""
     pack .status.in.info -side right -padx {10 0}
+    # a normally-empty notice; lights up red when a newer release is detected
+    # (els's .sb.update, verbatim mechanism) — click opens the download page
+    label .status.in.update -bg $C(bg) -fg $C(accent) -anchor e -font annStatus \
+        -text "" -cursor hand2
+    pack .status.in.update -side right -padx {10 0}
+    bind .status.in.update <Button-1> \
+        {ann::open_url "https://github.com/anafalanx/ann/releases/latest"}
     label .status.in.msg -bg $C(bg) -fg $C(muted) -anchor w -font annStatus -text "" -width 1
     pack .status.in.msg -side left -fill x -expand 1
+}
+
+# ---- update check (els's mechanism, verbatim) --------------------------------
+# Best-effort, fire-and-forget check of the GitHub Releases API — a public,
+# unauthenticated GET (one request at startup, far within the 60/hr limit, so
+# it stays within GitHub's terms). This runtime has no TLS, so we lean on
+# Windows' bundled curl.exe; stdout is piped back and stderr is sent to NUL so
+# no console window flashes. Any failure (offline, no curl, odd JSON) is
+# swallowed silently — the launcher never blocks or complains.
+proc ann::check_update {} {
+    set url "https://api.github.com/repos/anafalanx/ann/releases/latest"
+    if {[catch {
+        set ch [::open [list | curl.exe -s -m 6 \
+            -H "User-Agent: ann-launcher" \
+            -H "Accept: application/vnd.github+json" $url 2> NUL] r]
+    }]} { return }
+    set ::ann::update_buf ""
+    fconfigure $ch -blocking 0 -translation binary
+    fileevent $ch readable [list ann::update_read $ch]
+}
+proc ann::update_read {ch} {
+    if {[catch {read $ch} chunk]} { catch {close $ch} ; return }
+    append ::ann::update_buf $chunk
+    if {[eof $ch]} {
+        fileevent $ch readable {}
+        catch {close $ch}
+        ann::update_parse $::ann::update_buf
+    }
+}
+proc ann::update_parse {data} {
+    if {![regexp {"tag_name"\s*:\s*"([^"]+)"} $data -> tag]} { return }
+    set latest [string trimleft $tag vV]
+    if {[ann::version_gt $latest $::ann::version]} { ann::show_update $latest }
+}
+# a > b for dotted versions, via Tcl's own package comparator (junk -> false)
+proc ann::version_gt {a b} {
+    return [expr {![catch {package vcompare $a $b} c] && $c > 0}]
+}
+proc ann::show_update {ver} {
+    if {![winfo exists .status.in.update]} return
+    .status.in.update configure -text "ann $ver available"
+    ann::log INFO "update available: ann $ver"
+}
+proc ann::open_url {url} {
+    if {[catch {exec rundll32.exe url.dll,FileProtocolHandler $url &}]} {
+        catch {exec cmd.exe /c start "" $url &}
+    }
 }
 
 # The scrollbar style, cloned from els (els.tcl init_style): the clam theme's
@@ -1909,6 +1963,7 @@ proc ann::main {} {
     ann::apply_hotkey          ;# no-op if the config already registered it
     ann::tray_setup            ;# resident presence: click = open, right-click = menu
     ann::show
+    after 1500 ann::check_update   ;# els's startup update check (best-effort)
 }
 
 # Run main only when this file IS the program (startup script / wish), NOT when a

@@ -197,3 +197,23 @@ test stat-2.1 {the idle statusbar line reports indexing activity, never key hint
 } -result [list "90 apps · 1,234 files · indexing in background…" "90 apps · 1,234 files · updated 10:00"] -cleanup {
     set ::ann::last_stats {} ; set ::ann::last_scan_at ""
 }
+
+# ---- the update check (els's mechanism) ---------------------------------------
+test upd-1.1 {version_gt: dotted compare, junk-safe} -body {
+    list [ann::version_gt 0.2 0.1] [ann::version_gt 0.1 0.1] \
+         [ann::version_gt 0.1 0.2] [ann::version_gt banana 0.1] \
+         [ann::version_gt 1.0 0.9]
+} -result {1 0 0 0 1}
+
+test upd-1.2 {update_parse lights the statusbar cell only for a NEWER tag} -body {
+    ann::build
+    .status.in.update configure -text ""
+    ann::update_parse {{"tag_name": "v0.1", "name": "ann 0.1"}}
+    set same [.status.in.update cget -text]
+    ann::update_parse {{"tag_name": "v99.9", "name": "ann 99.9"}}
+    set newer [.status.in.update cget -text]
+    ann::update_parse {not json at all}
+    list $same $newer [.status.in.update cget -text]
+} -result {{} {ann 99.9 available} {ann 99.9 available}} -cleanup {
+    .status.in.update configure -text ""
+}
