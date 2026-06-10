@@ -534,23 +534,29 @@ A catalog item must record *which* launch path applies — desktop apps surfaced
 > default: watching all of `C:\` costs idle watcher churn on a busy system and
 > a ~50 MB database for marginal recall. Adding `C:\` in Settings re-enables
 > full-disk indexing with all the machinery below intact. The list is always
-> authoritative — ann scans *only* what it covers. When a priority location's
-> tier-0 slice caps out, the bulk phase picks up that location's TAIL
-> (throttled, allow-listed) instead of silently stopping at the cap.
+> authoritative — ann scans *only* what it covers, and an explicitly EMPTY list
+> scans no files at all (never a silent fallback to defaults).
 >
-> **Tier 0 — priority locations, first and fast.** A fixed set of Windows-11
-> locations that typically contain startable/openable items, scanned at normal
-> thread priority with no pacing, **before anything else**, so the catalog is
-> useful seconds after start. The set (resolved via `SHGetKnownFolderPath`,
-> existing dirs only, **and filtered to those covered by the roots list**):
-> Desktop, Public Desktop, Downloads, Documents, `%LOCALAPPDATA%\Programs`
-> (per-user installs), Program Files, Program Files (x86) — in that order
-> (most-startable first, so the tier-0 cap truncates the least valuable last).
-> Tier 0 indexes **all file types** (user areas), depth ≤ 6, cap ~30k rows.
-> Start-Menu `.lnk` + UWP enumeration remain separate sources ahead of it.
+> **Tier 0 — priority folders, first and fast (per-folder flag, owner
+> decision).** Priority is an attribute of EACH list entry, fully
+> user-controlled in Settings (● on / ○ off, a Priority toggle button): ON
+> folders are scanned at normal thread priority with no pacing, **before
+> anything else**, so the catalog is useful seconds after start. The DEFAULT
+> folders — seeded on first run and re-injectable via **Add Defaults** — carry
+> the flag ON; folders the user adds default to OFF. The default seed
+> (`SHGetKnownFolderPath`, existing dirs only): Desktop, Public Desktop,
+> Downloads, Documents, `%LOCALAPPDATA%\Programs` (per-user installs), Program
+> Files, Program Files (x86) — in that order (most-startable first, so the
+> tier-0 cap truncates the least valuable last; a hit cap is reported in stats,
+> and the flagged folder's overflow is never silently re-walked by the slow
+> tier). Tier 0 indexes **all file types**, depth ≤ 6, cap ~30k rows with
+> per-folder slices. In the config the option is `watched_roots` holding
+> `{path prio}` pairs; bare legacy paths migrate (default folders → on,
+> others → off). Start-Menu `.lnk` + UWP enumeration remain separate sources
+> ahead of it.
 >
-> **Tier 1 — the rest of each root, throttled.** After tier 0 commits and the
-> GUI is notified, the remainder of every root is walked in **background mode**
+> **Tier 1 — the priority-OFF folders, throttled.** After tier 0 commits and the
+> GUI is notified, every ○ folder is walked in **background mode**
 > (`THREAD_MODE_BACKGROUND_BEGIN` → very-low I/O + memory priority, the same
 > mechanism Windows search uses) **plus pacing** (sleep between entry batches),
 > in **batched transactions** (commit every few hundred upserts — never one

@@ -140,6 +140,10 @@ static Stats gLastStats;
 static double gFrecLambda = ANN_FREC_LAMBDA;   /* annindex::tune (M8) */
 
 static char *gRoots[ANN_ROOTS_MAX];            /* UTF-8, Tcl_Alloc'd; under gLock */
+static int   gRootsPrio[ANN_ROOTS_MAX];       /* 1 = tier 0 (fast/first), per folder */
+static int   gRootsSet = 0;                    /* set_roots called (even empty list):
+                                                * an explicit EMPTY list means "scan
+                                                * no files", never "use defaults" */
 static int   gRootsN = 0;
 
 static sqlite3_int64 gUsageQ[ANN_USAGE_QMAX];  /* under gLock */
@@ -415,48 +419,46 @@ static void scan_apps_folder(Writer *w, Stats *st) {
 /* ---- (c) files & folders under the watched roots (DESIGN §7.2) -------------- */
 static int prio_snapshot(char *out[ANN_PRIO_MAX]);   /* fwd: the defaults reuse it */
 
-static void roots_snapshot(char *out[ANN_ROOTS_MAX], int *outn) {
+/* Snapshot the scan-folder list WITH each folder's user-set priority flag
+ * (1 = tier 0: fast/first/all types; 0 = tier 1: slow/last/throttled). When
+ * nothing was ever set, the defaults are the seven startable-item locations,
+ * priority ON — ordinary entries the user may delete or demote (§7.2). */
+static void roots_snapshot(char *out[ANN_ROOTS_MAX], int prio[ANN_ROOTS_MAX], int *outn) {
     EnterCriticalSection(&gLock);
-    if (gRootsN == 0) {
-        /* defaults: THE PRIORITY LOCATIONS (DESIGN §7.2 amendment, owner
-         * decision — whole-drive roots cost idle watcher churn + a ~50MB db;
-         * these seven are where startable items live. Whole-disk stays one
-         * Settings edit away.) gLock is a CRITICAL_SECTION: reentrant, so the
-         * nested prio_snapshot lock is fine. */
-        char *prio[ANN_PRIO_MAX];
-        int n = prio_snapshot(prio);
+    if (gRootsN == 0 && !gRootsSet) {
+        /* gLock is a CRITICAL_SECTION: reentrant, the nested lock is fine */
+        char *defs[ANN_PRIO_MAX];
+        int n = prio_snapshot(defs);
         for (int i = 0; i < n; i++) {
-            if (gRootsN < ANN_ROOTS_MAX) gRoots[gRootsN++] = prio[i];
-            else Tcl_Free(prio[i]);
+            if (gRootsN < ANN_ROOTS_MAX) {
+                gRootsPrio[gRootsN] = 1;          /* defaults: priority ON */
+                gRoots[gRootsN++] = defs[i];
+            } else Tcl_Free(defs[i]);
         }
     }
     for (int i = 0; i < gRootsN; i++) {
         out[i] = (char *) Tcl_Alloc(strlen(gRoots[i]) + 1);
         strcpy(out[i], gRoots[i]);
+        prio[i] = gRootsPrio[i];
     }
     *outn = gRootsN;
     LeaveCriticalSection(&gLock);
 }
 
-/* ---- priority locations (tier 0, DESIGN §7.2 amendment) ---------------------
- * Win11 places that typically hold startable/openable items, most-startable
- * first (the tier-0 budget truncates the least valuable last). Tests may
- * override the set via annindex::set_priority. */
-static char *gPrioOverride[ANN_PRIO_MAX];     /* under gLock; NULL slots unused */
-static int   gPrioOverrideN = -1;             /* -1 = no override */
-
-static int prio_snapshot(char *out[ANN_PRIO_MAX]) {
-    EnterCriticalSection(&gLock);
-    if (gPrioOverrideN >= 0) {
-        int n = gPrioOverrideN;
-        for (int i = 0; i < n; i++) {
-            out[i] = (char *) Tcl_Alloc(strlen(gPrioOverride[i]) + 1);
-            strcpy(out[i], gPrioOverride[i]);
-        }
-        LeaveCriticalSection(&gLock);
-        return n;
+/* only the priority-ON folders (event tiering + the bulk walk's skip list) */
+static int roots_prio_snapshot(char *out[ANN_ROOTS_MAX]) {
+    char *all[ANN_ROOTS_MAX]; int pr[ANN_ROOTS_MAX]; int n = 0, k = 0;
+    roots_snapshot(all, pr, &n);
+    for (int i = 0; i < n; i++) {
+        if (pr[i]) out[k++] = all[i]; else Tcl_Free(all[i]);
     }
-    LeaveCriticalSection(&gLock);
+    return k;
+}
+
+/* ---- the DEFAULT seed locations (Win11 startable-item folders, §7.2) --------
+ * Most-startable first (the tier-0 budget truncates the least valuable last).
+ * Exposed as annindex::priority_paths for the Settings seed + coverage hint. */
+static int prio_snapshot(char *out[ANN_PRIO_MAX]) {
     const KNOWNFOLDERID *def[] = {
         &FOLDERID_Desktop, &FOLDERID_PublicDesktop, &FOLDERID_Downloads,
         &FOLDERID_Documents, &FOLDERID_UserProgramFiles,
@@ -493,8 +495,8 @@ static int path_covers(const char *root, const char *path) {
     return path[rl] == '\\' || path[rl] == '/';
 }
 
-/* the tier a live file event lands in: covered by a priority location -> 0 */
-static int tier_for_path(const char *path, char *prio[ANN_PRIO_MAX], int prion) {
+/* the tier a live file event lands in: covered by a priority-ON folder -> 0 */
+static int tier_for_path(const char *path, char *prio[], int prion) {
     for (int i = 0; i < prion; i++)
         if (path_covers(prio[i], path)) return 0;
     return 1;
@@ -610,42 +612,35 @@ static void walk_tree(Walk *wk, const wchar_t *dir, int depth) {
 /* tier 0: every priority location covered by a root — fast, unpaced, all types.
  * Each location gets its own budget SLICE: one bloated Documents tree must not
  * starve Program Files of its slots (observed on the first real-machine run).
- * fullCover[i]=1 iff location i was walked to completion — only those subtrees
- * are SKIPPED by the bulk phase; a capped location's tail is picked up there
- * (throttled, allow-listed) instead of being silently lost at the cap. */
+ * Each priority-ON folder gets its own budget SLICE: one bloated tree must
+ * not starve the rest (observed live). */
 static int gPrioEach = 8000;                   /* annindex::tune prio_each */
-static void scan_prio(Writer *w, Stats *st, char *roots[], int nroots,
-                      char *prio[], int nprio, int fullCover[ANN_PRIO_MAX]) {
+static void scan_prio(Writer *w, Stats *st, char *fast[], int nfast) {
     int each;
     EnterCriticalSection(&gLock); each = gPrioEach; LeaveCriticalSection(&gLock);
     int remaining = ANN_PRIO_BUDGET;
-    for (int i = 0; i < nprio; i++) fullCover[i] = 0;
-    for (int i = 0; i < nprio && remaining > 0; i++) {
-        int covered = 0;
-        for (int r = 0; r < nroots && !covered; r++)
-            covered = path_covers(roots[r], prio[i]);
-        if (!covered) continue;                /* the roots list is authoritative */
+    for (int i = 0; i < nfast && remaining > 0; i++) {
         Walk wk = { .w = w, .st = st, .tier = 0, .maxDepth = ANN_PRIO_DEPTH,
                     .budget = (remaining < each ? remaining : each) };
         int given = wk.budget;
-        wchar_t *wp = utf8_to_wide(prio[i]);
+        wchar_t *wp = utf8_to_wide(fast[i]);
         if (wp) { walk_tree(&wk, wp, 0); Tcl_Free((char *) wp); }
         remaining -= (given - wk.budget);
         if (wk.budget <= 0) st->capped_prio = 1;
-        else fullCover[i] = 1;
     }
     if (remaining <= 0) st->capped_prio = 1;
 }
 
-/* tier 1: the remainder of every root — paced, deny/allow filtered.
+/* tier 1: every priority-OFF folder — paced, deny/allow filtered, skipping any
+ * subtree owned by a priority-ON folder (overlap, e.g. C:\ off + Desktop on).
  * Returns 0 when aborted by new work (caller must NOT prune tier 1). */
-static int scan_bulk(Writer *w, Stats *st, char *roots[], int nroots,
-                     char *prio[], int nprio, int sleepMs, int batch) {
+static int scan_bulk(Writer *w, Stats *st, char *slow[], int nslow,
+                     char *fast[], int nfast, int sleepMs, int batch) {
     Walk wk = { .w = w, .st = st, .tier = 1, .maxDepth = ANN_BULK_DEPTH,
-                .budget = ANN_BULK_BUDGET, .skip = prio, .nskip = nprio,
+                .budget = ANN_BULK_BUDGET, .skip = fast, .nskip = nfast,
                 .sleepMs = sleepMs, .batch = batch };
-    for (int i = 0; i < nroots && wk.budget > 0 && !wk.aborted; i++) {
-        wchar_t *wr = utf8_to_wide(roots[i]);
+    for (int i = 0; i < nslow && wk.budget > 0 && !wk.aborted; i++) {
+        wchar_t *wr = utf8_to_wide(slow[i]);
         if (wr) { walk_tree(&wk, wr, 0); Tcl_Free((char *) wr); }
     }
     st->capped_bulk = (wk.budget <= 0);
@@ -696,15 +691,14 @@ static sqlite3_int64 next_gen(void) {
 
 /* Phase A (fast): Start Menu + UWP + syscmds + every covered priority location,
  * one transaction, then the tier-0 prune. The catalog is useful after this. */
-static void do_scan_fast(Writer *w, Stats *st, char *roots[], int nroots,
-                         char *prio[], int nprio, int fullCover[ANN_PRIO_MAX]) {
+static void do_scan_fast(Writer *w, Stats *st, char *fast[], int nfast) {
     w->gen = next_gen();
     int intx = (sqlite3_exec(w->db, "BEGIN", NULL, NULL, NULL) == SQLITE_OK);
     if (!intx) st->errors++;
     scan_start_menu(w, st);
     scan_apps_folder(w, st);
     seed_system_commands(w, st);
-    scan_prio(w, st, roots, nroots, prio, nprio, fullCover);
+    scan_prio(w, st, fast, nfast);
     if (!stop_requested() && st->errors == 0) {
         /* tier-0 prune: rows of fast kinds not re-stamped this generation are
          * gone. NEVER prune after an errored scan (un-stamped healthy rows). */
@@ -726,8 +720,8 @@ static void do_scan_fast(Writer *w, Stats *st, char *roots[], int nroots,
  * (walk_pace commits between batches); background CPU/IO priority when bg=1
  * (the indexer thread — never the GUI thread on a sync scan). The tier-1 prune
  * runs ONLY after a complete, error-free, un-aborted walk. */
-static void do_scan_bulk(Writer *w, Stats *st, char *roots[], int nroots,
-                         char *prio[], int nprio, int bg) {
+static void do_scan_bulk(Writer *w, Stats *st, char *slow[], int nslow,
+                         char *fast[], int nfast, int bg) {
     int sleepMs, batch;
     EnterCriticalSection(&gLock);
     sleepMs = gBulkSleepMs; batch = gBulkBatch;
@@ -738,7 +732,7 @@ static void do_scan_bulk(Writer *w, Stats *st, char *roots[], int nroots,
     if (bg) SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
     int intx = (sqlite3_exec(w->db, "BEGIN", NULL, NULL, NULL) == SQLITE_OK);
     if (!intx) st->errors++;
-    int ok = scan_bulk(w, st, roots, nroots, prio, nprio, sleepMs, batch);
+    int ok = scan_bulk(w, st, slow, nslow, fast, nfast, sleepMs, batch);
     if (intx && sqlite3_exec(w->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) st->errors++;
     if (bg) SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
     if (ok && !stop_requested() && st->errors == 0) {
@@ -763,17 +757,16 @@ static void do_scan_bulk(Writer *w, Stats *st, char *roots[], int nroots,
 /* the sync (test/tool) path: both phases, no notifies, no background mode */
 static void do_scan(Writer *w, Stats *st) {
     memset(st, 0, sizeof *st);
-    char *roots[ANN_ROOTS_MAX]; int nroots = 0;
-    char *prio[ANN_PRIO_MAX];   int nprio;
-    roots_snapshot(roots, &nroots);
-    nprio = prio_snapshot(prio);
-    int full[ANN_PRIO_MAX];
-    do_scan_fast(w, st, roots, nroots, prio, nprio, full);
-    char *skip[ANN_PRIO_MAX]; int nskip = 0;
-    for (int i = 0; i < nprio; i++) if (full[i]) skip[nskip++] = prio[i];
-    if (!stop_requested()) do_scan_bulk(w, st, roots, nroots, skip, nskip, 0);
+    char *roots[ANN_ROOTS_MAX]; int pr[ANN_ROOTS_MAX]; int nroots = 0;
+    roots_snapshot(roots, pr, &nroots);
+    char *fast[ANN_ROOTS_MAX], *slow[ANN_ROOTS_MAX];
+    int nfast = 0, nslow = 0;
+    for (int i = 0; i < nroots; i++) {
+        if (pr[i]) fast[nfast++] = roots[i]; else slow[nslow++] = roots[i];
+    }
+    do_scan_fast(w, st, fast, nfast);
+    if (!stop_requested()) do_scan_bulk(w, st, slow, nslow, fast, nfast, 0);
     for (int i = 0; i < nroots; i++) Tcl_Free(roots[i]);
-    for (int i = 0; i < nprio;  i++) Tcl_Free(prio[i]);
 }
 
 static Tcl_Obj *stats_dict(Tcl_Interp *ip, const Stats *st) {
@@ -872,8 +865,8 @@ static int apply_file_events(Writer *w) {
     LeaveCriticalSection(&gLock);
     if (n == 0) return 0;
     int changed = 0;
-    char *prio[ANN_PRIO_MAX];
-    int nprio = prio_snapshot(prio);
+    char *prio[ANN_ROOTS_MAX];
+    int nprio = roots_prio_snapshot(prio);   /* priority-ON folders tier the events */
     int errors = 0;
     int intx = (sqlite3_exec(w->db, "BEGIN", NULL, NULL, NULL) == SQLITE_OK);
     for (int i = 0; i < n; i++) {
@@ -952,20 +945,20 @@ static void scan_publish(const Stats *st) {
 
 static void thread_full_scan(Writer *w, Stats *st) {
     memset(st, 0, sizeof *st);
-    char *roots[ANN_ROOTS_MAX]; int nroots = 0;
-    char *prio[ANN_PRIO_MAX];   int nprio;
-    roots_snapshot(roots, &nroots);
-    nprio = prio_snapshot(prio);
-    int full[ANN_PRIO_MAX];
-    do_scan_fast(w, st, roots, nroots, prio, nprio, full);
+    char *roots[ANN_ROOTS_MAX]; int pr[ANN_ROOTS_MAX]; int nroots = 0;
+    roots_snapshot(roots, pr, &nroots);
+    char *fast[ANN_ROOTS_MAX], *slow[ANN_ROOTS_MAX];
+    int nfast = 0, nslow = 0;
+    for (int i = 0; i < nroots; i++) {
+        if (pr[i]) fast[nfast++] = roots[i]; else slow[nslow++] = roots[i];
+    }
+    do_scan_fast(w, st, fast, nfast);
     scan_publish(st);                       /* the popup is useful right now */
     int force = (InterlockedExchange(&gBulkForce, 0) != 0);
     sqlite3_int64 cd;
     EnterCriticalSection(&gLock); cd = gBulkCooldownS; LeaveCriticalSection(&gLock);
     if (!stop_requested() && (force || (sqlite3_int64) time(NULL) - gLastBulkTs >= cd)) {
-        char *skip[ANN_PRIO_MAX]; int nskip = 0;
-        for (int i = 0; i < nprio; i++) if (full[i]) skip[nskip++] = prio[i];
-        do_scan_bulk(w, st, roots, nroots, skip, nskip, 1);
+        do_scan_bulk(w, st, slow, nslow, fast, nfast, 1);
         /* stamp ATTEMPTS, not just completions: an event storm that aborts the
          * walk must not thrash full re-walks back to back; the timed resume in
          * the thread loop finishes an aborted walk after the cooldown */
@@ -973,7 +966,6 @@ static void thread_full_scan(Writer *w, Stats *st) {
         scan_publish(st);
     }
     for (int i = 0; i < nroots; i++) Tcl_Free(roots[i]);
-    for (int i = 0; i < nprio;  i++) Tcl_Free(prio[i]);
 }
 
 static Tcl_ThreadCreateType IdxThreadProc(ClientData cd) {
@@ -1058,9 +1050,9 @@ static Tcl_ThreadCreateType WatchThreadProc(ClientData cd) {
     int nents = 0;
     memset(ents, 0, sizeof(WatchEnt) * ANN_WATCH_MAX);
 
-    /* snapshot the roots + the config dir */
-    char *roots[ANN_ROOTS_MAX]; int nroots = 0;
-    roots_snapshot(roots, &nroots);
+    /* snapshot the roots (the watcher watches ALL folders, both tiers) */
+    char *roots[ANN_ROOTS_MAX]; int rpr[ANN_ROOTS_MAX]; int nroots = 0;
+    roots_snapshot(roots, rpr, &nroots);
     char cfgdir[1024] = ""; char cfgtail[260] = "";
     EnterCriticalSection(&gLock);
     if (gCfgPath[0]) {
@@ -1407,21 +1399,28 @@ static int Idx_RecordUsage(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const ob
 }
 
 static int Idx_SetRoots(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[]) {
+    /* set_roots <pathsList> ?priosList? — parallel lists; a missing/short prio
+     * list means priority OFF (user-added folders default to the slow tier) */
     (void) cd;
-    if (objc != 2) { Tcl_WrongNumArgs(ip, 1, objv, "rootsList"); return TCL_ERROR; }
-    Tcl_Size n;
-    Tcl_Obj **elems;
+    if (objc < 2 || objc > 3) { Tcl_WrongNumArgs(ip, 1, objv, "rootsList ?priosList?"); return TCL_ERROR; }
+    Tcl_Size n, np = 0;
+    Tcl_Obj **elems, **pels = NULL;
     if (Tcl_ListObjGetElements(ip, objv[1], &n, &elems) != TCL_OK) return TCL_ERROR;
+    if (objc == 3 && Tcl_ListObjGetElements(ip, objv[2], &np, &pels) != TCL_OK) return TCL_ERROR;
     if (n > ANN_ROOTS_MAX) n = ANN_ROOTS_MAX;
     EnterCriticalSection(&gLock);
     for (int i = 0; i < gRootsN; i++) { Tcl_Free(gRoots[i]); gRoots[i] = NULL; }
     gRootsN = 0;
+    gRootsSet = 1;
     for (Tcl_Size i = 0; i < n; i++) {
         const char *s = Tcl_GetString(elems[i]);
         char *cp = (char *) Tcl_Alloc(strlen(s) + 1);
         /* canonical backslashes: every catalog path derives from a root, so the
          * stored form must be slash-stable no matter how Tcl spelled it */
         for (size_t j = 0; ; j++) { cp[j] = (s[j] == '/') ? '\\' : s[j]; if (!s[j]) break; }
+        int pv = 0;
+        if (i < np) { Tcl_GetIntFromObj(NULL, pels[i], &pv); pv = (pv != 0); }
+        gRootsPrio[gRootsN] = pv;
         gRoots[gRootsN++] = cp;
     }
     LeaveCriticalSection(&gLock);
@@ -1447,12 +1446,16 @@ static int Idx_SetRoots(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[
 }
 
 static int Idx_GetRoots(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[]) {
+    /* returns {path prio} pairs — the Settings dialog round-trips these */
     (void) cd; (void) objc; (void) objv;
-    char *roots[ANN_ROOTS_MAX]; int n = 0;
-    roots_snapshot(roots, &n);
+    char *roots[ANN_ROOTS_MAX]; int pr[ANN_ROOTS_MAX]; int n = 0;
+    roots_snapshot(roots, pr, &n);
     Tcl_Obj *l = Tcl_NewListObj(0, NULL);
     for (int i = 0; i < n; i++) {
-        Tcl_ListObjAppendElement(ip, l, Tcl_NewStringObj(roots[i], -1));
+        Tcl_Obj *pair = Tcl_NewListObj(0, NULL);
+        Tcl_ListObjAppendElement(ip, pair, Tcl_NewStringObj(roots[i], -1));
+        Tcl_ListObjAppendElement(ip, pair, Tcl_NewIntObj(pr[i]));
+        Tcl_ListObjAppendElement(ip, l, pair);
         Tcl_Free(roots[i]);
     }
     Tcl_SetObjResult(ip, l);
@@ -1525,31 +1528,6 @@ static int Idx_PriorityPaths(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const 
     return TCL_OK;
 }
 
-/* annindex::set_priority <pathlist>|default — TEST HOOK: override the tier-0
- * location set so hermetic suites can exercise tiering inside a temp root. */
-static int Idx_SetPriority(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[]) {
-    (void) cd;
-    if (objc != 2) { Tcl_WrongNumArgs(ip, 1, objv, "pathlist|default"); return TCL_ERROR; }
-    EnterCriticalSection(&gLock);
-    for (int i = 0; i < gPrioOverrideN; i++) { Tcl_Free(gPrioOverride[i]); gPrioOverride[i] = NULL; }
-    gPrioOverrideN = -1;
-    LeaveCriticalSection(&gLock);
-    if (strcmp(Tcl_GetString(objv[1]), "default") == 0) return TCL_OK;
-    Tcl_Size ln;
-    Tcl_Obj **el;
-    if (Tcl_ListObjGetElements(ip, objv[1], &ln, &el) != TCL_OK) return TCL_ERROR;
-    if (ln > ANN_PRIO_MAX) { Tcl_SetObjResult(ip, Tcl_ObjPrintf("at most %d priority paths", ANN_PRIO_MAX)); return TCL_ERROR; }
-    EnterCriticalSection(&gLock);
-    gPrioOverrideN = (int) ln;
-    for (Tcl_Size i = 0; i < ln; i++) {
-        const char *s = Tcl_GetString(el[i]);
-        char *cp = (char *) Tcl_Alloc(strlen(s) + 1);
-        for (size_t j = 0; ; j++) { cp[j] = (s[j] == '/') ? '\\' : s[j]; if (!s[j]) break; }
-        gPrioOverride[i] = cp;
-    }
-    LeaveCriticalSection(&gLock);
-    return TCL_OK;
-}
 
 int Annindex_Init(Tcl_Interp *ip) {
 #ifdef USE_TCL_STUBS
@@ -1569,7 +1547,6 @@ int Annindex_Init(Tcl_Interp *ip) {
     Tcl_CreateObjCommand(ip, "::annindex::tune",         Idx_Tune,        NULL, NULL);
     Tcl_CreateObjCommand(ip, "::annindex::drives",       Idx_Drives,      NULL, NULL);
     Tcl_CreateObjCommand(ip, "::annindex::priority_paths", Idx_PriorityPaths, NULL, NULL);
-    Tcl_CreateObjCommand(ip, "::annindex::set_priority", Idx_SetPriority, NULL, NULL);
     Tcl_PkgProvideEx(ip, "annindex", "0.1", NULL);
     return TCL_OK;
 }

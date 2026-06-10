@@ -139,9 +139,10 @@ test cfg-6.1 {watched_roots option expands %VARS% and reaches the indexer} -cons
 } -body {
     ann::apply_option watched_roots [list {%TEMP%} $::ANN_FSROOT]
     set roots [annindex::get_roots]
-    # set_roots stores canonical backslash paths (catalog slash stability)
-    list [expr {[lindex $roots 0] eq [file nativename $::env(TEMP)]}] [lindex $roots 1]
-} -result [list 1 [file nativename $::ANN_FSROOT]] -cleanup {
+    # get_roots returns {path prio} pairs; set_roots canonicalizes backslashes
+    list [expr {[lindex $roots 0 0] eq [file nativename $::env(TEMP)]}] \
+         [lindex $roots 1 0] [lindex $roots 0 1] [lindex $roots 1 1]
+} -result [list 1 [file nativename $::ANN_FSROOT] 0 0] -cleanup {
     annindex::set_roots [list $::ANN_FSROOT]
 }
 

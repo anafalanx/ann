@@ -151,8 +151,7 @@ test tier-1.1 {priority locations index first-class (tier 0, every ext); bulk is
     set fh [open [file join $top deep junk.xyz] w]; close $fh     ;# tier1: denied ext
     file mkdir [file join $top deep node_modules]
     set fh [open [file join $top deep node_modules pkg.exe] w]; close $fh  ;# denied dir
-    annindex::set_roots [list $top]
-    annindex::set_priority [list [file join $top prio]]
+    annindex::set_roots [list [file join $top prio] $top] {1 0}
     annindex::tune bulk_sleep 0
 } -body {
     annindex::scan $::tdb
@@ -167,7 +166,6 @@ test tier-1.1 {priority locations index first-class (tier 0, every ext); bulk is
     anndb::close $c
     set out
 } -result {0 0 1 0 0} -cleanup {
-    annindex::set_priority default
     annindex::set_roots [list $::ANN_FSROOT]
     file delete -force [file join $::ANN_FSROOT tierroot]
     foreach s {{} -wal -shm} { catch {file delete -force $::tdb$s} }
@@ -180,8 +178,7 @@ test tier-1.2 {per-tier prune: a deleted bulk file vanishes after a clean rescan
     file mkdir $top [file join $top prio] [file join $top deep]
     set fh [open [file join $top prio keep.txt] w]; close $fh
     set fh [open [file join $top deep gone.pdf] w]; close $fh
-    annindex::set_roots [list $top]
-    annindex::set_priority [list [file join $top prio]]
+    annindex::set_roots [list [file join $top prio] $top] {1 0}
     annindex::tune bulk_sleep 0
     annindex::scan $::tdb
 } -body {
@@ -192,7 +189,6 @@ test tier-1.2 {per-tier prune: a deleted bulk file vanishes after a clean rescan
     anndb::close $c
     set out
 } -result {0 1} -cleanup {
-    annindex::set_priority default
     annindex::set_roots [list $::ANN_FSROOT]
     file delete -force [file join $::ANN_FSROOT tierroot2]
     foreach s {{} -wal -shm} { catch {file delete -force $::tdb$s} }
@@ -205,15 +201,13 @@ test tier-1.3 {stats expose the phase split and completion} -constraints hasext 
     file mkdir $top [file join $top prio]
     set fh [open [file join $top prio a.txt] w]; close $fh
     set fh [open [file join $top b.pdf] w]; close $fh
-    annindex::set_roots [list $top]
-    annindex::set_priority [list [file join $top prio]]
+    annindex::set_roots [list [file join $top prio] $top] {1 0}
     annindex::tune bulk_sleep 0
 } -body {
     set st [annindex::scan $::tdb]
     list [dict get $st files_prio] [dict get $st files_bulk] \
          [dict get $st bulk_done] [dict get $st bulk_aborted]
 } -result {1 1 1 0} -cleanup {
-    annindex::set_priority default
     annindex::set_roots [list $::ANN_FSROOT]
     file delete -force [file join $::ANN_FSROOT tierroot3]
     foreach s {{} -wal -shm} { catch {file delete -force $::tdb$s} }
@@ -266,7 +260,7 @@ test tier-3.2 {equal rows: the tier-0 one outranks; empty query hides frecency-l
     foreach s {{} -wal -shm} { catch {file delete -force $::sdb$s} }
 }
 
-test tier-1.4 {a capped priority location's tail lands in the bulk tier} -constraints hasext -setup {
+test tier-1.4 {a capped priority folder reports the cap; its subtree stays tier-0-owned} -constraints hasext -setup {
     set ::tdb [file join $::ANN_TMP tier4[pid].db]
     foreach s {{} -wal -shm} { catch {file delete -force $::tdb$s} }
     set top [file join $::ANN_FSROOT tierroot4]
@@ -274,18 +268,17 @@ test tier-1.4 {a capped priority location's tail lands in the bulk tier} -constr
     foreach n {a1.txt a2.txt a3.pdf} {
         set fh [open [file join $top prio $n] w]; close $fh
     }
-    annindex::set_roots [list $top]
-    annindex::set_priority [list [file join $top prio]]
+    annindex::set_roots [list [file join $top prio] $top] {1 0}
     annindex::tune bulk_sleep 0
     annindex::tune prio_each 2
 } -body {
     set st [annindex::scan $::tdb]
-    # 2 tier-0 slots used, capped; the remaining allow-listed file is tier 1
+    # 2 tier-0 slots used, cap REPORTED; the priority folder's overflow is NOT
+    # silently re-walked by the slow tier (per-folder flags own their subtrees)
     list [dict get $st files_prio] [dict get $st capped_prio] \
-         [expr {[dict get $st files_bulk] >= 1}]
-} -result {2 1 1} -cleanup {
+         [dict get $st files_bulk]
+} -result {2 1 0} -cleanup {
     annindex::tune prio_each 8000
-    annindex::set_priority default
     annindex::set_roots [list $::ANN_FSROOT]
     file delete -force [file join $::ANN_FSROOT tierroot4]
     foreach s {{} -wal -shm} { catch {file delete -force $::tdb$s} }

@@ -30,6 +30,7 @@ namespace eval ann {
     variable view_offset 0             ;# results index of the first visible row
     variable last_stats {}             ;# latest indexer stats (statusbar)
     variable last_scan_at ""           ;# HH:MM of the latest catalog update
+    variable set_pairs {}              ;# Settings dialog model: {path prio} pairs
     variable window_width 640          ;# fixed popup width (DESIGN §9.1, §11.4)
     variable indexing 1                ;# cold-start until the first catalog update
     variable aliases {}                ;# normalized-keyword -> catalog path (§6.7, §11.3)
@@ -269,15 +270,13 @@ ann::option weight_frecency     0.35         ;#      + w_frec  * norm(frecency)
 ann::option frecency_norm_k     4.0          ;# norm(x) = x/(x+k)
 ann::option window_width        640          ;# popup width in px
 
-# Watched roots for the file index. Default: the Windows-11 startable-item
-# locations — Desktop (+ Public), Downloads, Documents, %LOCALAPPDATA%/Programs,
-# and both Program Files. Those are always indexed first and fast; anything
-# beyond them (e.g. a whole drive, if you add C:/) follows in a throttled
-# background walk. %VARS% are expanded; / and \ both work.
-# ann::option watched_roots {
-#     C:/
-#     {%USERPROFILE%/Projects}
-# }
+# Folders to scan. These ARE the list — ordinary entries seeded with the
+# Windows-11 startable-item locations; delete any (or all) to stop scanning
+# them, add a drive root like C:/ for whole-disk. The startable locations are
+# always indexed first and fast; the rest follows in a throttled background
+# walk. %VARS% are expanded; / and \ both work. (The Settings dialog edits
+# this via its managed block at the end of the file.)
+ann::option watched_roots [lmap p [ann::default_roots] { list $p 1 }]
 
 # ---- a keyword alias (§6.7): typing exactly "cfg" pins this file to the top --
 ann::alias cfg [file join $ann::dir ann.config.tcl]
@@ -387,17 +386,31 @@ proc ann::apply_option {opt value} {
         weight_frecency { if {[ann::has anndb::tune]} { catch {anndb::tune wfrec $value} } }
         frecency_norm_k { if {[ann::has anndb::tune]} { catch {anndb::tune k $value} } }
         watched_roots {
+            # Entries are {path prio} pairs (prio 1 = scan fast/first, 0 = the
+            # throttled background tier). A bare path is accepted too (legacy /
+            # hand-written): its priority defaults to ON iff it is one of the
+            # default startable-item folders. %VARS% are expanded.
             if {[catch {llength $value} n]} {
                 ann::log WARN "watched_roots is not a list, ignored" ; return
             }
-            set roots {}
+            set defs [string tolower [ann::default_roots]]
+            set roots {} ; set prios {}
             foreach r $value {
+                set prio ""
+                if {[llength $r] == 2 && [lindex $r 1] in {0 1}} {
+                    set prio [lindex $r 1]
+                    set r [lindex $r 0]
+                }
                 if {[string first % $r] >= 0 && [ann::has annplat::expand_env]} {
                     catch { set r [annplat::expand_env $r] }
                 }
+                if {$prio eq ""} {
+                    set prio [expr {[string tolower $r] in $defs ? 1 : 0}]
+                }
                 lappend roots $r
+                lappend prios $prio
             }
-            if {[ann::has annindex::set_roots]} { catch {annindex::set_roots $roots} }
+            if {[ann::has annindex::set_roots]} { catch {annindex::set_roots $roots $prios} }
         }
         default { ann::log WARN "unknown option '$opt' ignored" }
     }
@@ -1649,13 +1662,17 @@ proc ann::settings_build {} {
     ttk::scrollbar $f.lf.sb -orient vertical -command [list $f.lf.list yview]
     pack $f.lf.list -side left -fill both -expand 1
     pack $f.lf -fill x
-    foreach r [ann::settings_current_roots] { $f.lf.list insert end $r }
 
     ttk::frame $f.lb
     ttk::button $f.lb.add -text "Add folder…" -style Dialog.TButton -command ann::settings_add_folder
     ttk::button $f.lb.rm  -text "Remove"      -style Dialog.TButton -command ann::settings_remove_folder
-    pack $f.lb.add $f.lb.rm -side left -padx {0 6} -pady 6
+    ttk::button $f.lb.pri -text "Priority"    -style Dialog.TButton -command ann::settings_toggle_priority
+    ttk::button $f.lb.def -text "Add Defaults" -style Dialog.TButton -command ann::settings_add_defaults
+    pack $f.lb.add $f.lb.rm $f.lb.pri $f.lb.def -side left -padx {0 6} -pady 6
     pack $f.lb -fill x
+    ttk::label $f.leg -anchor w -foreground $C(muted) \
+        -text "● priority: scanned first and fast   ○ background: scanned slowly, last"
+    pack $f.leg -fill x -pady {0 4}
 
     # coverage guidance (§7.2): priority locations not under any listed root
     ttk::frame $f.cov
@@ -1667,6 +1684,8 @@ proc ann::settings_build {} {
     grid $f.cov.inc -row 0 -column 2 -padx {8 0}
     grid columnconfigure $f.cov 1 -weight 1
     pack $f.cov -fill x -pady {0 4}
+
+    ann::settings_set_pairs [ann::settings_current_roots]
 
     ttk::frame $f.o
     ttk::label $f.o.hkl -text "Hotkey" -anchor w
@@ -1703,10 +1722,37 @@ proc ann::settings_open {} {
     catch {grab .settings}
 }
 
-# the roots shown in the dialog: live indexer roots (resolved defaults included)
+# ---- the dialog's folder model: a list of {path prio} pairs -------------------
+# The pairs list is the source of truth; the listbox renders it (● = priority
+# ON: scanned fast and first; ○ = OFF: the throttled background tier). The
+# selection index maps 1:1 onto the pairs list.
 proc ann::settings_current_roots {} {
     if {[ann::has annindex::get_roots] && ![catch {annindex::get_roots} r]} { return $r }
     return {}
+}
+proc ann::settings_pairs {} { return $::ann::set_pairs }
+proc ann::settings_set_pairs {pairs} {
+    set ::ann::set_pairs $pairs
+    set l .settings.f.lf.list
+    if {![winfo exists $l]} return
+    set keep [$l curselection]
+    $l delete 0 end
+    foreach pr $pairs {
+        lassign $pr p prio
+        $l insert end [expr {$prio ? "● $p" : "○ $p"}]
+    }
+    foreach i $keep { catch {$l selection set $i} }
+    ann::settings_refresh_coverage
+}
+# flip the priority flag of every selected folder (the user is fully in control)
+proc ann::settings_toggle_priority {} {
+    set l .settings.f.lf.list
+    set pairs $::ann::set_pairs
+    foreach i [$l curselection] {
+        lassign [lindex $pairs $i] p prio
+        lset pairs $i [list $p [expr {!$prio}]]
+    }
+    ann::settings_set_pairs $pairs
 }
 
 # ---- root coverage of the priority locations (DESIGN §7.2 amendment) ----------
@@ -1722,6 +1768,12 @@ proc ann::path_covers {root path} {
     if {$r eq $p} { return 1 }
     if {[string index $r end] ne "\\"} { append r "\\" }
     return [string equal -length [string length $r] $r $p]
+}
+
+# the seed/default scan folders: the Windows startable-item locations
+proc ann::default_roots {} {
+    if {[ann::has annindex::priority_paths] && ![catch {annindex::priority_paths} p]} { return $p }
+    return {}
 }
 
 # the priority locations NOT covered by the given roots (the Settings hint)
@@ -1743,7 +1795,7 @@ proc ann::uncovered_priorities {roots} {
 # is guided to include startable-item locations, never forced (§7.2)
 proc ann::settings_refresh_coverage {} {
     if {![winfo exists .settings.f.cov]} return
-    set unc [ann::uncovered_priorities [.settings.f.lf.list get 0 end]]
+    set unc [ann::uncovered_priorities [lmap pr $::ann::set_pairs { lindex $pr 0 }]]
     if {![llength $unc]} {
         grid remove .settings.f.cov.w .settings.f.cov.t .settings.f.cov.inc
         return
@@ -1759,9 +1811,11 @@ proc ann::settings_refresh_coverage {} {
 }
 
 proc ann::settings_include_uncovered {} {
-    set l .settings.f.lf.list
-    foreach p [ann::uncovered_priorities [$l get 0 end]] { $l insert end $p }
-    ann::settings_refresh_coverage
+    set pairs $::ann::set_pairs
+    foreach p [ann::uncovered_priorities [lmap pr $pairs { lindex $pr 0 }]] {
+        lappend pairs [list $p 1]          ;# default locations come back as fast
+    }
+    ann::settings_set_pairs $pairs
 }
 
 # the folder list's scrollbar: els autohide — exists only while the view is
@@ -1778,23 +1832,34 @@ proc ann::settings_vs_set {first last} {
 }
 
 proc ann::settings_add_folder {} {
-    set dir [tk_chooseDirectory -parent .settings -title "Add folder to index"]
+    set dir [tk_chooseDirectory -parent .settings -title "Add folder to scan"]
     if {$dir eq ""} return
     set dir [file nativename $dir]
-    set l .settings.f.lf.list
-    if {$dir in [$l get 0 end]} return
-    $l insert end $dir
-    ann::settings_refresh_coverage
+    set pairs $::ann::set_pairs
+    if {$dir in [lmap pr $pairs { lindex $pr 0 }]} return
+    lappend pairs [list $dir 0]            ;# user-added folders: priority OFF
+    ann::settings_set_pairs $pairs
 }
 proc ann::settings_remove_folder {} {
-    set l .settings.f.lf.list
-    foreach i [lreverse [$l curselection]] { $l delete $i }
-    ann::settings_refresh_coverage
+    set pairs $::ann::set_pairs
+    foreach i [lreverse [.settings.f.lf.list curselection]] {
+        set pairs [lreplace $pairs $i $i]
+    }
+    ann::settings_set_pairs $pairs
+}
+# re-inject the default startable-item folders (dedup; priority ON, like first run)
+proc ann::settings_add_defaults {} {
+    set pairs $::ann::set_pairs
+    set have [lmap pr $pairs { string tolower [lindex $pr 0] }]
+    foreach p [ann::default_roots] {
+        if {[string tolower $p] ni $have} { lappend pairs [list $p 1] }
+    }
+    ann::settings_set_pairs $pairs
 }
 
 proc ann::settings_apply {} {
     if {![winfo exists .settings]} return
-    set roots [.settings.f.lf.list get 0 end]
+    set roots $::ann::set_pairs            ;# {path prio} pairs
     set hk    [string trim [.settings.f.o.hk get]]
     set rl    [.settings.f.o.rl get]
     destroy .settings
