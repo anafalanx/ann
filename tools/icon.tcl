@@ -5,7 +5,7 @@
 # "the awl on the editor's own page"): a light rounded tile in the app's page
 # grey with a hairline edge ring, an ink object built from a few primitives, a
 # steel-blue collar band, and exactly ONE accent at the business end — for ann
-# that is the key's bit (the part that opens things), in ann's accent blue.
+# that is the key's bit (the part that opens things), in ann's chartreuse2.
 # ann is a keystroke launcher; the key is the object that opens everything else.
 #
 # Pure photo-image pixel math with signed-distance anti-aliasing: deterministic,
@@ -24,7 +24,7 @@ set TILE   {242 242 242}   ;# #F2F2F2 the page (ann::C(bg), same as els::PAGE)
 set EDGE   {212 212 212}   ;# #D4D4D4 hairline ring so the tile reads on white
 set INK    {26 26 26}      ;# #1A1A1A bow + shaft
 set FERR   {150 170 198}   ;# #96AAC6 collar band (els's ferrule blue)
-set ACCENT {38 139 210}    ;# #268BD2 ann's blue — the key's bit (els uses red)
+set ACCENT {118 238 0}     ;# #76EE00 chartreuse2 — the key's bit (els uses red)
 set EDGEW  3               ;# edge-ring width in 256-scale px
 
 proc clamp {x lo hi} { expr {$x < $lo ? $lo : ($x > $hi ? $hi : $x)} }
@@ -61,25 +61,21 @@ proc render {N path} {
     set img [image create photo -width $N -height $N]
     set s [expr {$N/256.0}]
 
-    # --- the key, laid on the 45-degree diagonal like els's awl ---------------
-    # axis u = (cos45, sin45); the bow sits upper-left, the bit lower-right
-    set ux 0.70710678 ; set uy 0.70710678
-    set qx -0.70710678 ; set qy 0.70710678      ;# perpendicular: teeth side (down-left)
-    set bx [expr {88*$s}] ; set by [expr {88*$s}]   ;# bow center
-    proc P {t} {                                  ;# point on the axis, 256-scale t
-        upvar bx bx by by ux ux uy uy s s
-        list [expr {$bx+$ux*$t*$s}] [expr {$by+$uy*$t*$s}]
-    }
-    set rBow   [expr {33*$s}]   ;# bow outer radius
-    set rHole  [expr {14*$s}]   ;# bow hole radius
-    set rShaft [expr {8.5*$s}]  ;# shaft half-width
-    lassign [P 28]  sx0 sy0     ;# shaft start (under the bow)
-    lassign [P 126] sx1 sy1     ;# shaft tip
-    lassign [P 40]  fx0 fy0     ;# collar band
-    lassign [P 50]  fx1 fy1
-    lassign [P 96]  t1x t1y     ;# tooth 1 (longer)
-    lassign [P 116] t2x t2y     ;# tooth 2
-    set tooth1 [expr {21*$s}] ; set tooth2 [expr {15*$s}] ; set rTooth [expr {6.5*$s}]
+    # --- the CHUNKY UPRIGHT key (owner pick from four rendered variants):
+    # large round bow top-center, broad shaft straight down, collar band at the
+    # neck, two accent teeth off the right side --------------------------------
+    set bx [expr {128*$s}] ; set by [expr {66*$s}]    ;# bow center
+    set rBow   [expr {46*$s}]
+    set rHole  [expr {21*$s}]
+    set rShaft [expr {13*$s}]
+    set sx0 $bx ; set sy0 [expr {104*$s}]             ;# shaft: straight down
+    set sx1 $bx ; set sy1 [expr {208*$s}]
+    set fx0 $bx ; set fy0 [expr {118*$s}]             ;# collar band
+    set fx1 $bx ; set fy1 [expr {130*$s}]
+    set t1x $bx ; set t1y [expr {158*$s}]             ;# teeth (to the right)
+    set t2x $bx ; set t2y [expr {186*$s}]
+    set qx 1.0 ; set qy 0.0
+    set tooth1 [expr {30*$s}] ; set tooth2 [expr {22*$s}] ; set rTooth [expr {9*$s}]
 
     for {set y 0} {$y < $N} {incr y} {
         set row {}
@@ -104,7 +100,7 @@ proc render {N path} {
             set cSh [smooth 1.0 -1.0 $dSh]
             if {$cSh > 0} { set col [mix $col $INK $cSh] }
             # collar band (els's ferrule blue, slightly wider than the shaft)
-            set dFe [sd_cap $fx $fy $fx0 $fy0 $fx1 $fy1 [expr {$rShaft+2.5*$s}]]
+            set dFe [sd_cap $fx $fy $fx0 $fy0 $fx1 $fy1 [expr {$rShaft+4*$s}]]
             set cFe [smooth 1.0 -1.0 $dFe]
             if {$cFe > 0} { set col [mix $col $FERR $cFe] }
             # the bit: two accent teeth hanging off one side near the tip

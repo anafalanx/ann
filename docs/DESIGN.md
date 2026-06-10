@@ -709,7 +709,8 @@ One fixed, polished look. No themes, no skins, no layout options.
 > explicit per §10.2) carrying the **real ann icon** (`wm iconphoto -default`,
 > not Tk's feather); the look matches **els** (calm grey `#F2F2F2` page,
 > near-black ink, flat white fields with hairlines, ONE accent flourish — the
-> caret in ann's own Solarized blue `#268BD2` (els owns red `#DC322F`; errors
+> caret in ann's own chartreuse2 `#76EE00` (els owns red `#DC322F`; accent
+> TEXT like the update notice uses chartreuse4 `#458B00` for contrast; errors
 > keep red as semantics) — `#D6E2F2` selection, Segoe UI chrome) instead of the
 > dark theme; the
 > result **list rows use a compact font** (name 8 pt / subtitle 5 pt — the panel

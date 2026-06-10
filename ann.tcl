@@ -54,15 +54,17 @@ namespace eval ann {
 
     # One fixed look, matching els (its DESIGN palette): a calm grey page,
     # near-black ink, flat white fields with hairlines, ONE accent flourish (the
-    # caret), and a cool calm selection tint. ann's accent is Solarized BLUE
-    # #268BD2 — the family sibling of els's Solarized red #DC322F — so the two
-    # apps share a look but never a color (owner decision; the icon's key bit
-    # carries the same blue). Errors stay red: that is semantics, not branding.
+    # caret), and a cool calm selection tint. ann's accent is CHARTREUSE2
+    # #76EE00 (owner decision via the x colors browser; els owns red #DC322F) —
+    # the icon's key teeth carry the same green. accentText is chartreuse4:
+    # #76EE00 on the light page is ~1.4:1 contrast, unreadable as TEXT, so the
+    # update notice and hints use the darker shade. Errors stay red: semantics,
+    # not branding.
     variable C
     array set C {
         bg "#F2F2F2"  panel "#FFFFFF"  ink "#1A1A1A"  muted "#767676"
-        accent "#268BD2"  good "#3C8A50"  bad "#DC322F"  sel "#D6E2F2"
-        hair "#D9D9D9"  focus "#BFCFE3"
+        accent "#76EE00"  accentText "#458B00"  good "#3C8A50"  bad "#DC322F"
+        sel "#D6E2F2"  hair "#D9D9D9"  focus "#BFCFE3"
     }
 }
 
@@ -738,7 +740,7 @@ proc ann::build_statusbar {} {
     pack .status.in.info -side right -padx {10 0}
     # a normally-empty notice; lights up red when a newer release is detected
     # (els's .sb.update, verbatim mechanism) — click opens the download page
-    label .status.in.update -bg $C(bg) -fg $C(accent) -anchor e -font annStatus \
+    label .status.in.update -bg $C(bg) -fg $C(accentText) -anchor e -font annStatus \
         -text "" -cursor hand2
     pack .status.in.update -side right -padx {10 0}
     bind .status.in.update <Button-1> \
@@ -1691,7 +1693,7 @@ proc ann::settings_build {} {
 
     # coverage guidance (§7.2): priority locations not under any listed root
     ttk::frame $f.cov
-    ttk::label $f.cov.w -text "⚠" -foreground $C(accent)
+    ttk::label $f.cov.w -text "⚠" -foreground $C(accentText)
     ttk::label $f.cov.t -text "" -anchor w
     ttk::button $f.cov.inc -text "Include" -style Dialog.TButton -command ann::settings_include_uncovered
     grid $f.cov.w -row 0 -column 0 -padx {0 4}
