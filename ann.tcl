@@ -11,7 +11,7 @@
 package require Tk
 
 namespace eval ann {
-    variable version "0.1"     ;# major.minor, two natural numbers
+    variable version "0.2"     ;# major.minor, two natural numbers
     variable dir ""
     variable logfile ""
     variable visible 0
