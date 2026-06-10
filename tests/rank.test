@@ -67,25 +67,27 @@ test alias-1.1 {an exact alias pins its target above the fuzzy winner} -constrai
     set ::ann::aliases {} ; set ::ann::reader "" ; anndb::close $::db ; rclean
 }
 
-# ---- bucketing with reserved slots (DESIGN §6.5, pure Tcl) -------------------
+# ---- bucketing (§6.5 revised: commands -> executables -> files -> folders;
+# score decides within a bucket, no reserved slots) ----------------------------
 proc mkcands {nApps nWin nFile} {
     set c {}
     for {set i 0} {$i < $nApps} {incr i} { lappend c [dict create name app$i  kind app    path a$i] }
     for {set i 0} {$i < $nWin}  {incr i} { lappend c [dict create name win$i  kind window path w$i] }
-    for {set i 0} {$i < $nFile} {incr i} { lappend c [dict create name file$i kind file   path f$i] }
+    for {set i 0} {$i < $nFile} {incr i} { lappend c [dict create name file$i kind file   path f$i.txt] }
     return $c
 }
-test bucket-1.1 {reserved slots surface a window and a file under an app-heavy limit} -body {
-    set picked [ann::bucketize [mkcands 20 3 3] 9]
-    set kinds [lmap c $picked { dict get $c kind }]
-    list [llength $picked] [expr {"window" in $kinds}] [expr {"file" in $kinds}] [llength [lsearch -all $kinds app]]
-} -result {9 1 1 7}
+test bucket-1.1 {apps and windows share the executables bucket by score; files follow} -body {
+    set c [mkcands 3 0 2]
+    lappend c [dict create name winHot kind window path w score 9]
+    set names [lmap r [ann::bucketize $c 9] { dict get $r name }]
+    list [lindex $names 0] [lrange $names 4 5]
+} -result {winHot {file0 file1}}
 test bucket-1.2 {no windows/files -> all app slots used} -body {
     set picked [ann::bucketize [mkcands 20 0 0] 9]
     list [llength $picked] [llength [lsearch -all [lmap c $picked {dict get $c kind}] app]]
 } -result {9 9}
-test bucket-1.3 {unused reserved slots are reclaimed (1 window, no files)} -body {
-    set picked [ann::bucketize [mkcands 20 1 0] 9]
+test bucket-1.3 {the limit truncates across bucket boundaries cleanly} -body {
+    set picked [ann::bucketize [mkcands 8 0 5] 9]
     set kinds [lmap c $picked { dict get $c kind }]
-    list [llength $picked] [llength [lsearch -all $kinds app]] [llength [lsearch -all $kinds window]]
+    list [llength $picked] [llength [lsearch -all $kinds app]] [llength [lsearch -all $kinds file]]
 } -result {9 8 1}

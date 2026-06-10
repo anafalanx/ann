@@ -440,6 +440,18 @@ $$\text{final} = w_{fuzzy}\cdot \text{fuzzyScore} \;+\; w_{frec}\cdot \text{norm
 
 ### 6.5 Stage 5 — fixed source-priority ordering (a locked decision)
 
+> **Amendment (v0.4+, by owner decision — supersedes the three buckets below):**
+> the buckets are now **by NATURE, not by source**:
+> **1. commands** (system commands + any future ann commands) ·
+> **2. executable stuff** (apps, UWP, shortcuts, running windows, provider
+> results, and plain files with executable extensions: exe com bat cmd msi msc
+> lnk url appref-ms) · **3. openable files** · **4. folders** — score-ranked
+> within each bucket, **no reserved slots**. Born from a real failure: a
+> portable `firefox.exe` (exact name match, old files bucket) ranked below
+> eight Office shortcuts recalled only via the f-i-r-e-f-o-x subsequence of
+> their target PATHS — the penalized fallback recall must never outrank an
+> exact name match through bucket privilege.
+
 Results are **not** a single relevance-blended list. After scoring, results are bucketed and presented in **fixed source priority**:
 
 1. **Apps** (installed applications, UWP, shortcuts, system commands, config results) — ranked by `final` within the bucket.

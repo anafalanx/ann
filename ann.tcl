@@ -695,6 +695,10 @@ proc ann::build {} {
     grid remove .c.vs
     grid rowconfigure    .c.body 0 -weight 1
     grid columnconfigure .c.body 0 -weight 1
+    # RESERVE the bar's column even while it is hidden: without the minsize, the
+    # grid's requested width changes as the bar appears/disappears and the whole
+    # window visibly wobbles a few px during scrolling (user-reported glitch)
+    grid columnconfigure .c.body 1 -minsize [winfo reqwidth .c.vs]
     label .c.list.empty -bg $C(bg) -fg $C(muted) -anchor w -font {-size 11} -text "" -width 1
     ann::make_rows
 
@@ -1159,40 +1163,48 @@ proc ann::on_query {} {
 # windows -> files, but reserve up to one window and one file slot so a small
 # result_limit dominated by apps still surfaces a matching window/file; reclaim
 # any unused reserved slot back to the priority fill.
+# is this catalog FILE "executable stuff"? (extension-based, §6.5 bucket 2)
+proc ann::is_executable {r} {
+    expr {[string tolower [file extension [dict get $r path]]] in \
+        {.exe .com .bat .cmd .msi .msc .lnk .url .appref-ms}}
+}
+
+# Bucket order (owner decision, supersedes the old apps->windows->files):
+#   1. commands (system commands + any future ann commands)
+#   2. executable stuff (apps, running windows, executable files)
+#   3. openable files
+#   4. folders
+# Score-ranked WITHIN each bucket (stable sort: equal scores keep the C-ranked
+# arrival order) and NO reserved slots — relevance decides inside a bucket, the
+# bucket decides between natures. Born from a real failure: a portable
+# firefox.exe (exact name, files bucket) sat below eight Office shortcuts whose
+# TARGET PATHS merely contained f-i-r-e-f-o-x as a subsequence — the penalized
+# target-fallback recall must never outrank an exact name match through bucket
+# privilege.
 proc ann::bucketize {cands limit} {
-    set apps {} ; set wins {} ; set files {}
+    set cmds {} ; set execs {} ; set files {} ; set dirs {}
+    # default arm = shortcut/uwp/app/provider rows (comments must stay OUT of a
+    # switch pattern list: Tcl parses them as patterns)
     foreach c $cands {
         switch -- [dict get $c kind] {
-            window      { lappend wins  $c }
-            file - folder { lappend files $c }
-            default     { lappend apps  $c }
+            system_cmd { lappend cmds  $c }
+            window     { lappend execs $c }
+            folder     { lappend dirs  $c }
+            file       {
+                if {[ann::is_executable $c]} { lappend execs $c } \
+                else                         { lappend files $c }
+            }
+            default    { lappend execs $c }
         }
     }
-    # Each bucket is sorted by score (stable: equal scores keep arrival order, so
-    # the C-ranked DB rows stay ranked and provider rows slot in competitively).
-    foreach v {apps wins files} {
+    set out {}
+    foreach v {cmds execs files dirs} {
         set pairs [lmap c [set $v] {
             list [expr {[dict exists $c score] ? [dict get $c score] : 0}] $c
         }]
-        set $v [lmap p [lsort -real -decreasing -index 0 $pairs] { lindex $p 1 }]
+        lappend out {*}[lmap p [lsort -real -decreasing -index 0 $pairs] { lindex $p 1 }]
     }
-    # Decide the per-bucket COUNTS first (reserve 1 window + 1 file when those
-    # buckets match, fill the rest by priority, reclaim unused), then emit the
-    # buckets as contiguous slices — the presented order is STRICTLY apps ->
-    # windows -> files (§6.5 locked decision; the counts never interleave).
-    set na [llength $apps] ; set nw [llength $wins] ; set nf [llength $files]
-    # reserves never crowd out the last app slot and never exceed the limit
-    set rcap [expr {max(0, $limit - ($na > 0 ? 1 : 0))}]
-    set tw [expr {min($nw > 0 ? 1 : 0, $rcap)}]
-    set tf [expr {min($nf > 0 ? 1 : 0, $rcap - $tw)}]
-    set ta [expr {min($na, max(0, $limit - $tw - $tf))}]
-    set rem [expr {$limit - $ta - $tw - $tf}]
-    if {$rem > 0} { set add [expr {min($rem, $na - $ta)}] ; incr ta $add ; incr rem -$add }
-    if {$rem > 0} { set add [expr {min($rem, $nw - $tw)}] ; incr tw $add ; incr rem -$add }
-    if {$rem > 0} { set add [expr {min($rem, $nf - $tf)}] ; incr tf $add ; incr rem -$add }
-    return [concat [lrange $apps 0 [expr {$ta - 1}]] \
-                   [lrange $wins 0 [expr {$tw - 1}]] \
-                   [lrange $files 0 [expr {$tf - 1}]]]
+    return [lrange $out 0 [expr {$limit - 1}]]
 }
 
 # Apply the exact-alias top-pin (§6.7) then bucket. The C search already returns

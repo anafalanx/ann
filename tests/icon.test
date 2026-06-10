@@ -217,3 +217,18 @@ test upd-1.2 {update_parse lights the statusbar cell only for a NEWER tag} -body
 } -result {{} {ann 99.9 available} {ann 99.9 available}} -cleanup {
     .status.in.update configure -text ""
 }
+
+test scroll-2.1 {the window width is IDENTICAL with and without the scrollbar} -body {
+    set ::ann::result_limit 9
+    ann::build
+    wm deiconify .
+    set ::ann::results [mk30] ; set ::ann::sel 0 ; set ::ann::view_offset 0
+    ann::render_results
+    update ; update
+    set wWith [winfo width .]
+    set ::ann::results [lrange [mk30] 0 1]      ;# 2 results: bar hides
+    ann::render_results
+    update ; update
+    set wWithout [winfo width .]
+    list [expr {$wWith == $wWithout}] [winfo ismapped .c.vs]
+} -result {1 0} -cleanup { set ::ann::results {} ; ann::render_results }

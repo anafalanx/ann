@@ -76,22 +76,39 @@ test rv-11.1 {an aged-14d anchor of 8 ranks below a fresh anchor of 5} -constrai
     dict get [lindex [anndb::search $::db {test app} 5] 0] name
 } -result {Test App Two} -cleanup { anndb::close $::db ; rvclean }
 
-# ---- #40: bucketize emits strict apps -> windows -> files order ---------------
-test rv-40.1 {composed list never interleaves buckets} -body {
+# ---- #40 (revised): commands -> executables -> files -> folders, no interleave
+test rv-40.1 {composed list follows the four-bucket order, never interleaved} -body {
     set c {}
-    foreach k {file app window app file window app} {
-        lappend c [dict create name x kind $k path p score 1]
+    foreach {k p} {file a.txt app x window w file b.doc system_cmd s folder d app y} {
+        lappend c [dict create name x kind $k path $p score 1]
     }
-    set kinds [lmap r [ann::bucketize $c 7] { dict get $r kind }]
+    set kinds [lmap r [ann::bucketize $c 9] { dict get $r kind }]
     set order {}
     foreach k $kinds { if {$k ni $order} { lappend order $k } }
     list $kinds $order
-} -result {{app app app window window file file} {app window file}}
-test rv-40.2 {limit 1 goes to the apps bucket} -body {
+} -result {{system_cmd app window app file file folder} {system_cmd app window file folder}}
+test rv-40.2 {limit 1: a command beats everything} -body {
     set c [list [dict create name w kind window path p score 9] \
-               [dict create name a kind app path p score 1]]
+               [dict create name s kind system_cmd path s score 0.1] \
+               [dict create name a kind app path p score 5]]
     lmap r [ann::bucketize $c 1] { dict get $r kind }
-} -result {app}
+} -result {system_cmd}
+test rv-40.3 {an executable FILE ranks with apps; a strong name beats weak path matches} -body {
+    # the real-world firefox case: Office shortcuts recalled via their target
+    # PATHS (weak, penalized) vs a portable firefox.exe (exact name, kind=file)
+    set c [list \
+        [dict create name "Office Language Preferences" kind shortcut path s1 score -1.2] \
+        [dict create name "OneNote" kind shortcut path s2 score -1.4] \
+        [dict create name "firefox.exe" kind file path {C:\p\firefox.exe} score 2.9] \
+        [dict create name "Firefox" kind folder path {C:\p\Firefox} score 2.5] \
+        [dict create name "notes.txt" kind file path {C:\p\notes.txt} score 0.4]]
+    lmap r [ann::bucketize $c 9] { dict get $r name }
+} -result {firefox.exe {Office Language Preferences} OneNote notes.txt Firefox}
+test rv-40.4 {is_executable: extension classes} -body {
+    lmap p {a.exe b.BAT c.lnk d.msc e.txt f.pdf g} {
+        ann::is_executable [dict create kind file path "C:\\x\\$p"]
+    }
+} -result {1 1 1 1 0 0 0}
 
 # ---- #6: instance_tag survives non-Latin-1 install paths ----------------------
 test rv-6.1 {instance tag is computable for a Cyrillic path} -body {
