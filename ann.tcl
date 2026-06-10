@@ -894,6 +894,7 @@ proc ann::make_rows {} {
         foreach w [list $f $f.ic $f.tx $f.tx.name $f.tx.sub] {
             bind $w <Button-1>        [list ann::row_click $i]
             bind $w <Double-Button-1> [list ann::row_dblclick $i]
+            bind $w <Button-3>        [list ann::row_context $i %X %Y]
             bind $w <MouseWheel>      { ann::wheel %D }
         }
     }
@@ -1516,77 +1517,70 @@ proc ann::act_close_window {hwnd} {
     after 150 ann::do_query        ;# let the window die, then refresh the list
 }
 
+# The action menu is a CLASSIC native context menu now (owner decision,
+# supersedes the custom §9.5 panel): Tab/Ctrl+K posts it at the selected row,
+# right-click posts it at the pointer. Navigation/Enter/Esc are the native
+# menu's own. Destructive actions use the classic cascade-confirm idiom — the
+# item is a submenu whose single child executes — so a slip of the finger can
+# never fire them and no dialog is ever needed.
+proc ann::actions_menu {r} {
+    catch {destroy .actmenu}
+    menu .actmenu -tearoff 0
+    # the Map/Unmap pair keeps panel_open truthful for the interaction guards
+    # (wheel scrolling, catalog-update refresh suppression)
+    bind .actmenu <Map>   { set ::ann::panel_open 1 }
+    bind .actmenu <Unmap> { set ::ann::panel_open 0 }
+    set i 0
+    foreach a [ann::actions_for $r] {
+        set lbl [dict get $a label]
+        set cmd [list ann::action_run $lbl [dict get $a script]]
+        if {[dict get $a destructive]} {
+            menu .actmenu.c$i -tearoff 0
+            .actmenu.c$i add command -label "Confirm: $lbl" -command $cmd
+            .actmenu add cascade -label "$lbl..." -menu .actmenu.c$i
+        } else {
+            .actmenu add command -label $lbl -command $cmd
+        }
+        incr i
+    }
+    return .actmenu
+}
+
+proc ann::action_run {lbl scr} {
+    if {[catch {uplevel #0 $scr} e]} {
+        ann::log ERROR "action '$lbl': $e"
+        ann::status "action failed: $e" error
+    }
+}
+
+# Tab / Ctrl+K: the context menu of the SELECTED row, posted at that row
 proc ann::panel_toggle {} {
-    variable panel_open
-    if {$panel_open} { ann::panel_close ; return }
-    variable results ; variable sel
+    variable results ; variable sel ; variable result_limit ; variable view_offset
     if {![llength $results]} return
-    set ::ann::panel_actions [ann::actions_for [lindex $results $sel]]
-    set ::ann::panel_sel 0
-    set ::ann::panel_confirm -1
-    set panel_open 1
-    ann::panel_render
+    set m [ann::actions_menu [lindex $results $sel]]
+    set i [expr {$sel - $view_offset}]
+    set row .c.list.row$i
+    if {$i >= 0 && $i < $result_limit && [winfo exists $row] && [winfo ismapped $row]} {
+        set x [expr {[winfo rootx $row] + [winfo width $row] / 3}]
+        set y [expr {[winfo rooty $row] + [winfo height $row] - 4}]
+    } else {
+        set x [winfo pointerx .] ; set y [winfo pointery .]
+    }
+    tk_popup $m $x $y
 }
 
 proc ann::panel_close {} {
-    variable panel_open
-    if {!$panel_open} return
-    set panel_open 0
-    set ::ann::panel_confirm -1
-    catch {destroy .c.panel}
+    set ::ann::panel_open 0
+    catch {.actmenu unpost}
 }
 
-proc ann::panel_render {} {
-    variable C ; variable panel_actions ; variable panel_sel ; variable panel_confirm
-    catch {destroy .c.panel}
-    if {!$::ann::panel_open} return
-    set p [frame .c.panel -bg $C(panel) -padx 2 -pady 2 \
-               -highlightthickness 1 -highlightbackground $C(hair)]
-    set i 0
-    foreach a $panel_actions {
-        set txt [dict get $a label]
-        if {$i == $panel_confirm} { set txt "Confirm: $txt — Enter again, Esc cancels" }
-        set bg [expr {$i == $panel_sel ? $C(sel) : $C(panel)}]
-        set fg [expr {[dict get $a destructive] && $i == $panel_confirm ? $C(bad) : $C(ink)}]
-        label $p.a$i -text "  $txt  " -bg $bg -fg $fg -anchor w -font annName -width 1
-        pack $p.a$i -fill x
-        incr i
-    }
-    # bottom-right by default; if the panel is taller than the popup body, anchor
-    # at the TOP-right instead so the selected first rows are never clipped off
-    update idletasks
-    if {[winfo exists .c] && [winfo reqheight $p] > [winfo height .c] - 40} {
-        place $p -relx 1.0 -rely 0.0 -x -4 -y 4 -anchor ne -relwidth 0.62
-    } else {
-        place $p -relx 1.0 -rely 1.0 -x -4 -y -30 -anchor se -relwidth 0.62
-    }
-    raise $p
-}
-
-proc ann::panel_move {d} {
-    variable panel_actions ; variable panel_sel
-    set n [llength $panel_actions]
-    if {!$n} return
-    set panel_sel [expr {($panel_sel + $d) % $n}]
-    if {$panel_sel < 0} { incr panel_sel $n }
-    set ::ann::panel_confirm -1          ;# moving disarms a pending confirm
-    ann::panel_render
-}
-
-proc ann::panel_invoke {} {
-    variable panel_actions ; variable panel_sel ; variable panel_confirm
-    if {![llength $panel_actions]} return
-    set a [lindex $panel_actions $panel_sel]
-    if {[dict get $a destructive] && $panel_confirm != $panel_sel} {
-        set panel_confirm $panel_sel     ;# arm: the next Enter executes (§9.5)
-        ann::panel_render
-        return
-    }
-    ann::panel_close
-    if {[catch {uplevel #0 [dict get $a script]} e]} {
-        ann::log ERROR "action '[dict get $a label]': $e"
-        ann::status "action failed: $e" error
-    }
+# right-click on a row: select it, then the same classic menu at the pointer
+proc ann::row_context {i X Y} {
+    set ri [expr {$::ann::view_offset + $i}]
+    if {$ri >= [llength $::ann::results]} return
+    set ::ann::sel $ri
+    ann::render_results
+    tk_popup [ann::actions_menu [lindex $::ann::results $ri]] $X $Y
 }
 
 # ============================================================================
@@ -1921,18 +1915,9 @@ proc ann::settings_save {roots hotkey result_limit} {
     close $fh
 }
 
-# key router: the panel captures navigation while open
+# key router. While the (native) context menu is posted, ITS grab handles
+# every key — arrows, Enter, Esc never reach the entry, so no panel branch.
 proc ann::key_nav {action} {
-    if {$::ann::panel_open} {
-        switch -- $action {
-            up     { ann::panel_move -1 }
-            down   { ann::panel_move 1 }
-            enter  { ann::panel_invoke }
-            escape { ann::panel_close }
-            tab    { ann::panel_close }
-        }
-        return 1
-    }
     switch -- $action {
         up     { ann::move_sel -1 }
         down   { ann::move_sel 1 }

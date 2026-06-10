@@ -154,30 +154,25 @@ test panel-1.3 {destructive syscmd is confirm-gated; lock is not} -body {
 test panel-2.1 {panel state machine: open, navigate, inline confirm arming} -body {
     ann::build
     wm deiconify .
-    set ::ann::results [list [mk system_cmd syscmd:shutdown]]
-    set ::ann::sel 0
-    ann::render_results
-    ann::key_nav tab                      ;# open the panel
-    set opened $::ann::panel_open
-    set armed0 $::ann::panel_confirm
-    ann::key_nav enter                    ;# first Enter on destructive: ARMS
-    set armed1 $::ann::panel_confirm
-    ann::key_nav escape                   ;# Esc closes (and disarms)
-    set closed [expr {!$::ann::panel_open}]
-    list $opened $armed0 $armed1 $closed
-} -result {1 -1 0 1} -cleanup { set ::ann::results {} ; ann::panel_close ; ann::render_results }
+    set m [ann::actions_menu [mk system_cmd syscmd:shutdown]]
+    # entry 0 = the destructive syscmd: a classic cascade-confirm
+    set t0 [$m type 0]
+    set l0 [$m entrycget 0 -label]
+    set sub [$m entrycget 0 -menu]
+    set lc [$sub entrycget 0 -label]
+    # and a plain command entry exists too (Quit ann is on every menu)
+    set types {}
+    for {set i 0} {$i <= [$m index end]} {incr i} { lappend types [$m type $i] }
+    list $t0 $l0 $lc [expr {"command" in $types}]
+} -result {cascade Run... {Confirm: Run} 1} -cleanup { catch {destroy .actmenu} }
 
-test panel-2.2 {moving the panel selection disarms a pending confirm} -body {
-    set ::ann::results [list [mk system_cmd syscmd:shutdown]]
-    set ::ann::sel 0
-    ann::render_results
-    ann::key_nav tab
-    ann::key_nav enter                    ;# arm
-    ann::key_nav down                     ;# move -> disarm
-    set out [list $::ann::panel_confirm $::ann::panel_open]
-    ann::key_nav escape
-    set out
-} -result {-1 1} -cleanup { set ::ann::results {} ; ann::panel_close ; ann::render_results }
+test panel-2.2 {action_run executes; a throwing action is caught, never fatal} -body {
+    set ::p22 ""
+    ann::action_run good {::set ::p22 ran}
+    set ok $::p22
+    set rc [catch {ann::action_run boom {error kaput}}]
+    list $ok $rc
+} -result {ran 0}
 
 test panel-2.3 {copy path action puts the path on the clipboard} -body {
     set r [mk file {C:\some where\thing.txt}]
@@ -195,3 +190,20 @@ test panel-3.1 {invoking a stale window result re-queries instead of erroring} -
     ann::invoke_result $r            ;# must not throw; silently re-enumerates
     expr {[llength $::ann_test_bgerrors] == 0}
 } -result 1
+
+test panel-3.2 {right-click selects the row and posts the classic menu there} -body {
+    set ::ann::result_limit 9
+    ann::build ; wm deiconify .
+    set ::ann::results {}
+    foreach n {Alpha Beta Gamma} {
+        lappend ::ann::results [dict create id $n name $n path "C:\x\$n.txt" kind file launch path target {} score 1]
+    }
+    set ::ann::sel 0 ; set ::ann::view_offset 0
+    ann::render_results
+    set ::tkpopup_calls {}
+    ann::row_context 2 333 444
+    lassign [lindex $::tkpopup_calls end] m x y
+    list $::ann::sel $m $x $y [expr {[$m index end] >= 0}]
+} -result {2 .actmenu 333 444 1} -cleanup {
+    set ::ann::results {} ; catch {destroy .actmenu} ; ann::render_results
+}

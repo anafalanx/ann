@@ -753,6 +753,15 @@ This is a genuine Tk-on-Windows limitation that the design confronts directly:
 
 ### 9.5 The action panel (Raycast-style)
 
+> **Amendment (v0.5+, by owner decision — supersedes the custom slide-in
+> panel):** the action surface is a **classic NATIVE context menu** (Tk menu →
+> a real Windows popup menu), opened with **Tab/Ctrl+K** at the selected row or
+> by **right-clicking any row** (which selects it first). Navigation, Enter and
+> Esc are the native menu's own. **Destructive actions use the classic
+> cascade-confirm idiom**: the item is a submenu ("Run... ▸ Confirm: Run"), so
+> a stray Enter can never fire them and no dialog box is ever involved (§15.4
+> honored). The inline arm/confirm state machine is gone with the custom panel.
+
 A **secondary menu listing every action for the currently selected result**, opened with **Tab** (primary) or **Ctrl+K** (alias). It slides in over/within the popup; arrows navigate its items, Enter runs the chosen action, Esc/Tab closes it back to the list.
 
 Actions are **contextual to the result's `kind`**:

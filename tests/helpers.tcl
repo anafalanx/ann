@@ -78,3 +78,8 @@ proc ::ann::bgerror {msg {opts {}}} { ::ann_test_bgerror $msg }
 ::tcltest::testConstraint hashotkey [ann::has annhotkey::start]
 ::tcltest::testConstraint hasindex  [ann::has annindex::scan]
 ::tcltest::testConstraint hasicon   [ann::has annicon::fill]
+
+# Never post a REAL (grabbing) menu inside the suite: record instead. Tests
+# inspect ::tkpopup_calls; the menus themselves are inspected via entrycget.
+set ::tkpopup_calls {}
+proc ::tk_popup {m x y args} { lappend ::tkpopup_calls [list $m $x $y] }

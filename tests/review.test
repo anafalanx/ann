@@ -179,20 +179,20 @@ test rv2-1.3 {a strong provider result outranks a weak app match (per-bucket sor
     lmap r [ann::bucketize [list $weak $strong] 9] { dict get $r name }
 } -result {Strong Weak}
 
-test rv2-1.4 {catalog update with the panel open leaves the panel alone} -body {
+test rv2-1.4 {catalog update while the context menu is up does not requery} -body {
     ann::build
     wm deiconify .
-    set ::ann::results [list [dict create id 1 name N path P kind app launch path target {} score 1]]
+    set marker [list [dict create id ZZmark name N path P kind app launch path target {} score 1]]
+    set ::ann::results $marker
     set ::ann::sel 0
     ann::render_results
-    ann::key_nav tab
-    set was $::ann::panel_open
+    set ::ann::panel_open 1            ;# = the native menu is mapped (Map binding)
     set ::ann::visible 1
     ann::on_catalog_updated
-    set still $::ann::panel_open
-    ann::key_nav escape
-    list $was $still
-} -result {1 1} -cleanup { set ::ann::results {} ; ann::panel_close ; set ::ann::visible 0 }
+    set kept [expr {$::ann::results eq $marker}]
+    set ::ann::panel_open 0
+    set kept
+} -result 1 -cleanup { set ::ann::results {} ; set ::ann::visible 0 ; ann::render_results }
 
 test rv2-1.5 {an aliased command-prefix pin survives the bucket sort} -body {
     set strong [dict create id b name Strong path b kind app launch path target {} score 99]
