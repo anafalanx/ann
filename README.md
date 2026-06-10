@@ -83,5 +83,5 @@ and the rules that keep the repo Tcl + C23 + one `.cmd`.
 
 ## About
 
-Built on **Tcl/Tk 9.0.3** and **SQLite 3.51** (FTS5). **v0.2**.
+Built on **Tcl/Tk 9.0.3** and **SQLite 3.51** (FTS5). **v0.3**.
 © 2026 Vincent Vercauteren. **MIT** licensed; see [`LICENSE`](LICENSE).
