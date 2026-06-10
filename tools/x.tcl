@@ -121,7 +121,8 @@ proc task_help {args} {
   launchtest         end-to-end launch test: index, type a query, Enter, check app starts
   probe <f> [args]   run an ad-hoc verification script under the CONSOLE tclsh
                      with the dialog-quiet preamble (tests/probe.tcl) preloaded
-  icon               regenerate resources/icon*.png (the search-lens app icon)
+  icon               regenerate resources/icon*.png (the key app icon)
+  colors [name ...]  browse Tk's named colors (swatches + hex)
   fetch-twapi        vendor the twapi extension into .toolchain/
   fetch-git          vendor MinGit into .toolchain/git/
   dist               build + selftest-gate + put the release exe in dist/
@@ -348,6 +349,14 @@ proc task_launchtest {args} {
 }
 
 proc task_icon {args} { need wish ; stream [wish] [P tools icon.tcl] {*}$args }
+
+# Browse Tk's named colors (swatches + hex, filter, click-to-copy) — copied from
+# the els tooling per the methodology (a real copy, never a link).
+proc task_colors {args} {
+    need wish
+    exec [wish] [P tools colors.tcl] {*}$args &
+    puts "launched color viewer"
+}
 
 # Screenshot the popup: launch ann.exe, find its window by PID (twapi), capture it
 # with the cap extension's PrintWindow (occlusion-proof), write a PNG, close it.
