@@ -1,0 +1,91 @@
+# tests/rank.test — the M3 search pipeline: the C fzy scorer, the fuzzy+frecency
+# blend, exact-alias top-pin, and source-priority bucketing with reserved slots.
+
+package require tcltest
+namespace import ::tcltest::*
+
+proc rdb {} { return [file join $::ANN_TMP rank[pid].db] }
+proc rclean {} { foreach s {{} -wal -shm} { catch {file delete -force [rdb]$s} } }
+proc seed {db} {
+    anndb::upsert $db p_gc  {Google Chrome}      shortcut path {} {} 0
+    anndb::upsert $db p_vsc {Visual Studio Code} shortcut path {} {} 0
+    anndb::upsert $db p_np  {Notepad}            shortcut path {} {} 0
+    anndb::upsert $db p_cal {Calculator}         uwp      aumid {} {} 0
+}
+proc names {rows} { return [lmap r $rows { dict get $r name }] }
+
+# ---- the C fzy scorer (DESIGN §6.3) -----------------------------------------
+test fz-1.1 {gc matches Google Chrome} -constraints hasext -body {
+    expr {[anndb::fuzzy gc {Google Chrome}] > 0}
+} -result 1
+test fz-1.2 {vsc matches Visual Studio Code} -constraints hasext -body {
+    expr {[anndb::fuzzy vsc {Visual Studio Code}] > 0}
+} -result 1
+test fz-1.3 {a non-subsequence does not match} -constraints hasext -body {
+    expr {[anndb::fuzzy xqz {Google Chrome}] < 0}
+} -result 1
+test fz-1.4 {a case-insensitive exact match is the maximum} -constraints hasext -body {
+    expr {[anndb::fuzzy code {Code}] > [anndb::fuzzy code {Visual Studio Code}]}
+} -result 1
+test fz-1.5 {word-boundary matches beat buried ones} -constraints hasext -body {
+    expr {[anndb::fuzzy gc {Google Chrome}] > [anndb::fuzzy gc {Frogcatcher}]}
+} -result 1
+
+# ---- end-to-end ranking (seeded catalog) ------------------------------------
+test rank-1.1 {gc -> Google Chrome on top} -constraints hasext -setup {
+    rclean ; set ::db [anndb::open [rdb]] ; anndb::schema $::db ; seed $::db
+} -body {
+    dict get [lindex [anndb::search $::db gc 9] 0] name
+} -result {Google Chrome} -cleanup { anndb::close $::db ; rclean }
+
+test rank-1.2 {vsc -> Visual Studio Code on top (subsequence, not substring)} -constraints hasext -setup {
+    rclean ; set ::db [anndb::open [rdb]] ; anndb::schema $::db ; seed $::db
+} -body {
+    dict get [lindex [anndb::search $::db vsc 9] 0] name
+} -result {Visual Studio Code} -cleanup { anndb::close $::db ; rclean }
+
+# ---- frecency breaks ties (DESIGN §6.4) -------------------------------------
+test frec-1.1 {among equal fuzzy matches, the used one ranks higher} -constraints hasext -setup {
+    rclean ; set ::db [anndb::open [rdb]] ; anndb::schema $::db
+    anndb::upsert $::db p1 {Test App One} shortcut path {} {} 0
+    anndb::upsert $::db p2 {Test App Two} shortcut path {} {} 0
+    set id2 [dict get [anndb::get $::db p2] id]
+    anndb::exec $::db "INSERT INTO frecency(catalog_id,decayed_score,last_event_ts) VALUES($id2,5.0,[clock seconds])"
+} -body {
+    dict get [lindex [anndb::search $::db {test app} 9] 0] name
+} -result {Test App Two} -cleanup { anndb::close $::db ; rclean }
+
+# ---- exact-alias top-pin (DESIGN §6.7) --------------------------------------
+test alias-1.1 {an exact alias pins its target above the fuzzy winner} -constraints hasext -setup {
+    rclean ; set ::db [anndb::open [rdb]] ; anndb::schema $::db ; seed $::db
+    set ::ann::reader $::db ; set ::ann::result_limit 9 ; set ::ann::aliases {}
+    ann::alias np p_cal      ;# "np" deliberately aliases Calculator, not Notepad
+} -body {
+    # "np" fuzzy-matches Notepad, but the exact alias pins Calculator to the top
+    dict get [lindex [ann::rank [anndb::search $::db np 80] np] 0] name
+} -result {Calculator} -cleanup {
+    set ::ann::aliases {} ; set ::ann::reader "" ; anndb::close $::db ; rclean
+}
+
+# ---- bucketing with reserved slots (DESIGN §6.5, pure Tcl) -------------------
+proc mkcands {nApps nWin nFile} {
+    set c {}
+    for {set i 0} {$i < $nApps} {incr i} { lappend c [dict create name app$i  kind app    path a$i] }
+    for {set i 0} {$i < $nWin}  {incr i} { lappend c [dict create name win$i  kind window path w$i] }
+    for {set i 0} {$i < $nFile} {incr i} { lappend c [dict create name file$i kind file   path f$i] }
+    return $c
+}
+test bucket-1.1 {reserved slots surface a window and a file under an app-heavy limit} -body {
+    set picked [ann::bucketize [mkcands 20 3 3] 9]
+    set kinds [lmap c $picked { dict get $c kind }]
+    list [llength $picked] [expr {"window" in $kinds}] [expr {"file" in $kinds}] [llength [lsearch -all $kinds app]]
+} -result {9 1 1 7}
+test bucket-1.2 {no windows/files -> all app slots used} -body {
+    set picked [ann::bucketize [mkcands 20 0 0] 9]
+    list [llength $picked] [llength [lsearch -all [lmap c $picked {dict get $c kind}] app]]
+} -result {9 9}
+test bucket-1.3 {unused reserved slots are reclaimed (1 window, no files)} -body {
+    set picked [ann::bucketize [mkcands 20 1 0] 9]
+    set kinds [lmap c $picked { dict get $c kind }]
+    list [llength $picked] [llength [lsearch -all $kinds app]] [llength [lsearch -all $kinds window]]
+} -result {9 8 1}

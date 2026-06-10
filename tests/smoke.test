@@ -1,0 +1,43 @@
+# tests/smoke.test — M0 smoke tests: the pure-Tcl fuzzy placeholder, and (when the
+# C extensions are built) the SQLite/FTS5 selftest, the active-monitor query, and
+# the worker->GUI thread bridge.
+
+package require tcltest
+namespace import ::tcltest::*
+
+# ---- fuzzy subsequence placeholder (pure Tcl, always available) -------------
+test fuzzy-1.1 {gc is a subsequence of Google Chrome} -body {
+    expr {[ann::fuzzy gc {Google Chrome}] > 0}
+} -result 1
+test fuzzy-1.2 {non-subsequence scores 0} -body {
+    ann::fuzzy zzx {Google Chrome}
+} -result 0
+test fuzzy-1.3 {vsc is a subsequence of Visual Studio Code} -body {
+    expr {[ann::fuzzy vsc {Visual Studio Code}] > 0}
+} -result 1
+test fuzzy-1.4 {empty query matches} -body {
+    expr {[ann::fuzzy {} {anything}] > 0}
+} -result 1
+test fuzzy-1.5 {word-boundary start outscores mid-word} -body {
+    expr {[ann::fuzzy ch {Chrome}] > [ann::fuzzy ch {Search}]}
+} -result 1
+
+# ---- SQLite / FTS5 (C extension) --------------------------------------------
+test sqlite-1.1 {fts5 trigram + math selftest passes} -constraints hasext -body {
+    dict get [anndb::selftest] ok
+} -result 1
+test sqlite-1.2 {linked SQLite is 3.x} -constraints hasext -body {
+    string match 3.* [anndb::version]
+} -result 1
+test sqlite-1.3 {trigram 'chr' matches exactly Google Chrome} -constraints hasext -body {
+    dict get [anndb::selftest] fts5_name
+} -result {Google Chrome}
+
+# ---- platform layer (C extension) -------------------------------------------
+test plat-1.1 {active monitor rect is 4 integers} -constraints hasext -body {
+    set r [annplat::active_monitor_rect]
+    expr {[llength $r] == 4 && [string is integer -strict [lindex $r 2]] && [lindex $r 2] > 0}
+} -result 1
+test plat-1.2 {worker->GUI thread bridge round-trips} -constraints hasext -body {
+    annplat::thread_roundtrip
+} -result ok

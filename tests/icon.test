@@ -1,0 +1,199 @@
+# tests/icon.test — the HICON→RGBA→Tk-photo pipeline (DESIGN §9.7): correct
+# dimensions, alpha (the Tk_PhotoPutBlock offset trap), the LRU cache, graceful
+# degradation, and the virtualized row UI discipline.
+
+package require tcltest
+namespace import ::tcltest::*
+
+test icon-1.1 {a real exe icon fills at the requested size} -constraints hasicon -setup {
+    catch {image delete tic1} ; image create photo tic1
+} -body {
+    set r [annicon::fill tic1 {C:\Windows\System32\notepad.exe} 32]
+    list [expr {$r in {hit miss}}] [image width tic1] [image height tic1]
+} -result {1 32 32} -cleanup { image delete tic1 }
+
+test icon-1.2 {second fill of the same spec is a cache hit} -constraints hasicon -setup {
+    catch {image delete tic2} ; image create photo tic2
+    annicon::fill tic2 {C:\Windows\System32\calc.exe} 32
+} -body {
+    annicon::fill tic2 {C:\Windows\System32\calc.exe} 32
+} -result hit -cleanup { image delete tic2 }
+
+test icon-1.3 {icon has correct alpha: corners transparent, center opaque} -constraints hasicon -setup {
+    catch {image delete tic3} ; image create photo tic3
+} -body {
+    annicon::fill tic3 stock:folder 32
+    # the folder glyph fills the center; the extreme corner is blank
+    list [tic3 transparency get 0 0] [tic3 transparency get 16 18]
+} -result {1 0} -cleanup { image delete tic3 }
+
+test icon-1.4 {icon has real color data (not all-black / all-transparent)} -constraints hasicon -setup {
+    catch {image delete tic4} ; image create photo tic4
+} -body {
+    annicon::fill tic4 {C:\Windows\System32\notepad.exe} 32
+    set sum 0
+    foreach {r g b} [tic4 get 16 16] { incr sum $r ; incr sum $g ; incr sum $b }
+    expr {$sum > 0}
+} -result 1 -cleanup { image delete tic4 }
+
+test icon-1.5 {a bogus path degrades to the stock doc icon, no error} -constraints hasicon -setup {
+    catch {image delete tic5} ; image create photo tic5
+} -body {
+    list [annicon::fill tic5 {C:\no\such\dir\zzz_does_not_exist.bin} 32] [image width tic5]
+} -result {miss 32} -cleanup { image delete tic5 }
+
+test icon-1.6 {stats reports cache state} -constraints hasicon -body {
+    set s [annicon::stats]
+    list [expr {[dict get $s entries] > 0}] [expr {[dict get $s hits] >= 0}]
+} -result {1 1}
+
+test icon-1.7 {a directory path yields a 32px icon} -constraints hasicon -setup {
+    catch {image delete tic7} ; image create photo tic7
+} -body {
+    annicon::fill tic7 $::env(WINDIR) 32
+    list [image width tic7] [image height tic7]
+} -result {32 32} -cleanup { image delete tic7 }
+
+# ---- the virtualized row UI ---------------------------------------------------
+test rows-1.1 {render creates only result_limit photo images (virtualization)} -body {
+    ann::build
+    wm deiconify .            ;# build withdraws (anti-flash); root is alpha-0 in tests
+    update idletasks
+    set imgs [lsearch -all -inline [image names] annimg*]
+    expr {[llength $imgs] <= $::ann::result_limit}
+} -result 1
+
+test rows-1.2 {render shows N rows for N results and highlights the selection} -body {
+    set ::ann::results {}
+    foreach n {Alpha Beta Gamma} {
+        lappend ::ann::results [dict create id 0 name $n path C:\\Windows kind app launch path target {} score 1]
+    }
+    set ::ann::sel 1
+    ann::render_results
+    update            ;# full update: idle height-sync + geometry negotiation
+    update
+    list [winfo ismapped .c.list.row0] [winfo ismapped .c.list.row2] \
+         [winfo ismapped .c.list.row3] \
+         [expr {[.c.list.row1 cget -bg] eq $::ann::C(sel)}] \
+         [expr {[.c.list.row0 cget -bg] eq $::ann::C(bg)}]
+} -result {1 1 0 1 1} -cleanup { set ::ann::results {} ; set ::ann::sel 0 ; ann::render_results }
+
+test rows-2.1 {click selects a row; double-click invokes it} -body {
+    ann::build
+    wm deiconify .
+    set ::ann::results {}
+    foreach n {Alpha Beta} {
+        lappend ::ann::results [dict create id $n name $n path P kind app launch tclproc target {} score 1 script [list ::set ::rows21 $n]]
+    }
+    set ::ann::sel 0
+    ann::render_results
+    update
+    ann::row_click 1
+    set selAfter $::ann::sel
+    set ::rows21 ""
+    ann::row_dblclick 1
+    list $selAfter $::rows21
+} -result {1 Beta} -cleanup { set ::ann::results {} ; ann::render_results }
+
+# ---- the real status bar (els-style docked bar) ------------------------------
+test stat-1.1 {build creates a docked status bar with hairline + two cells} -body {
+    ann::build
+    list [winfo exists .status] [winfo exists .status.sep] \
+         [winfo exists .status.in.msg] [winfo exists .status.in.info] \
+         [winfo manager .status]
+} -result {1 1 1 1 pack}
+
+test stat-1.2 {update_foot writes the count; singular/plural correct} -body {
+    set ::ann::indexing 0
+    set ::ann::results {}
+    ann::update_foot
+    set zero [.status.in.info cget -text]
+    set ::ann::results [list [dict create id a name A path P kind app launch path target {} score 1]]
+    ann::update_foot
+    set one [.status.in.info cget -text]
+    list $zero $one
+} -result {{0 results} {1 result}} -cleanup { set ::ann::results {} ; ann::update_foot }
+
+test stat-1.3 {ann::status shows a transient message, then restores the hint} -body {
+    ann::status "hello world"
+    set shown [.status.in.msg cget -text]
+    ann::status ""                       ;# manual restore (no waiting on the timer)
+    set restored [.status.in.msg cget -text]
+    list $shown [expr {$restored eq [ann::status_idle_text]}]
+} -result {{hello world} 1} -cleanup { catch {after cancel $::ann::status_after} ; set ::ann::status_after "" }
+
+# ---- the window icon ----------------------------------------------------------
+test icon-win-1.1 {set_window_icon resolves the bundled icon and applies it} -setup {
+    set ::st_savedir $::ann::dir ; set ::ann::dir $::ANN_ROOT
+} -body {
+    set p [ann::resource icon16.png]
+    set rc [catch {ann::set_window_icon} e]
+    list [expr {$p ne ""}] $rc
+} -result {1 0} -cleanup { set ::ann::dir $::st_savedir }
+
+# ---- the scrollable viewport (50 results, x visible, els-style scrollbar) -----
+proc mk30 {} {
+    set out {}
+    for {set i 0} {$i < 30} {incr i} {
+        lappend out [dict create id "r$i" name "Item $i" path "P$i" kind app launch path target {} score 1]
+    }
+    return $out
+}
+test scroll-1.1 {viewport shows result_limit rows; the bar appears; offset slices} -body {
+    set ::ann::result_limit 9      ;# pin (an earlier test may have applied a config)
+    ann::build
+    wm deiconify .
+    set ::ann::results [mk30] ; set ::ann::sel 0 ; set ::ann::view_offset 0
+    ann::render_results
+    update ; update
+    set packed 0
+    for {set i 0} {$i < $::ann::result_limit} {incr i} {
+        if {[winfo ismapped .c.list.row$i]} { incr packed }
+    }
+    set bar [winfo ismapped .c.vs]
+    ann::scroll_to 10
+    set firstname [.c.list.row0.tx.name cget -text]
+    list $packed $bar $firstname $::ann::view_offset
+} -result [list 9 1 {Item 10} 10] -cleanup { set ::ann::results {} ; ann::scroll_to 0 ; ann::render_results }
+
+test scroll-1.2 {move_sel keeps the selection visible (window follows)} -body {
+    set ::ann::results [mk30] ; set ::ann::sel 0 ; set ::ann::view_offset 0
+    for {set i 0} {$i < 12} {incr i} { ann::move_sel 1 }
+    set a [list $::ann::sel $::ann::view_offset]
+    for {set i 0} {$i < 12} {incr i} { ann::move_sel -1 }
+    set b [list $::ann::sel $::ann::view_offset]
+    list $a $b
+} -result {{12 4} {0 0}} -cleanup { set ::ann::results {} ; ann::scroll_to 0 ; ann::render_results }
+
+test scroll-1.3 {scrollbar protocol + wheel + click mapping} -body {
+    set ::ann::results [mk30] ; set ::ann::sel 0 ; set ::ann::view_offset 0
+    ann::render_results
+    ann::scroll_cmd scroll 1 pages
+    set pg $::ann::view_offset
+    ann::scroll_cmd moveto 0.5
+    set mv $::ann::view_offset
+    ann::wheel 120                       ;# one notch up = -3 rows
+    set wh $::ann::view_offset
+    ann::row_click 2
+    set sel $::ann::sel                  ;# offset + 2
+    ann::scroll_cmd scroll -100 units    ;# clamps at 0
+    list $pg $mv $wh $sel $::ann::view_offset
+} -result {9 15 12 14 0} -cleanup { set ::ann::results {} ; ann::scroll_to 0 ; set ::ann::sel 0 ; ann::render_results }
+
+test scroll-1.4 {the bar hides when everything fits (els autohide)} -body {
+    set ::ann::results [list [dict create id a name A path P kind app launch path target {} score 1]]
+    ann::render_results
+    update
+    winfo ismapped .c.vs
+} -result 0 -cleanup { set ::ann::results {} ; ann::render_results }
+
+test stat-2.1 {the idle statusbar line reports indexing activity, never key hints} -body {
+    set ::ann::last_stats {lnk_found 60 uwp_found 30 files_found 1234 bulk_done 0 bulk_aborted 0 capped_bulk 0}
+    set ::ann::last_scan_at "10:00"
+    set t1 [ann::status_idle_text]
+    dict set ::ann::last_stats bulk_done 1
+    set t2 [ann::status_idle_text]
+    list $t1 $t2
+} -result [list "90 apps · 1,234 files · indexing in background…" "90 apps · 1,234 files · updated 10:00"] -cleanup {
+    set ::ann::last_stats {} ; set ::ann::last_scan_at ""
+}

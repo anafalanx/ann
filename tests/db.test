@@ -1,0 +1,82 @@
+# tests/db.test — the SQLite data layer (schema, upsert, trigram/LIKE search,
+# shared normalization). No COM, no threads — pure DB behavior.
+
+package require tcltest
+namespace import ::tcltest::*
+
+proc dbfile {} { return [file join $::ANN_TMP test[pid].db] }
+proc dbclean {} { foreach s {{} -wal -shm} { catch {file delete -force [dbfile]$s} } }
+
+test db-norm-1.1 {normalize folds case} -constraints hasext -body {
+    anndb::normalize "GOOGLE Chrome"
+} -result {google chrome}
+test db-norm-1.2 {normalize folds Latin diacritics} -constraints hasext -body {
+    anndb::normalize "Résumé Ångström Señor"
+} -result {resume angstrom senor}
+test db-norm-1.3 {non-Latin passes through (lowercased ASCII only)} -constraints hasext -body {
+    anndb::normalize "Café 北京 2024"
+} -result "cafe 北京 2024"
+
+test db-1.1 {open + schema + empty count} -constraints hasext -setup {
+    dbclean ; set ::db [anndb::open [dbfile]] ; anndb::schema $::db
+} -body {
+    anndb::count $::db
+} -result 0 -cleanup { anndb::close $::db ; dbclean }
+
+test db-1.2 {upsert + trigram MATCH (chr -> Chrome only)} -constraints hasext -setup {
+    dbclean ; set ::db [anndb::open [dbfile]] ; anndb::schema $::db
+    anndb::upsert $::db {C:\x\Google Chrome.lnk} {Google Chrome} shortcut path {C:\Program Files\Google\Chrome\chrome.exe} {} 0
+    anndb::upsert $::db {C:\x\Visual Studio Code.lnk} {Visual Studio Code} shortcut path {} {} 0
+    anndb::upsert $::db {C:\x\Notepad.lnk} {Notepad} shortcut path {} {} 0
+} -body {
+    set r [anndb::search $::db chr 10]
+    list [llength $r] [dict get [lindex $r 0] name] [dict get [lindex $r 0] kind]
+} -result {1 {Google Chrome} shortcut} -cleanup { anndb::close $::db ; dbclean }
+
+test db-1.3 {short (1-2 char) query uses LIKE prefix} -constraints hasext -setup {
+    dbclean ; set ::db [anndb::open [dbfile]] ; anndb::schema $::db
+    anndb::upsert $::db p1 {Notepad} shortcut path {} {} 0
+    anndb::upsert $::db p2 {Paint} shortcut path {} {} 0
+} -body {
+    lmap x [anndb::search $::db no 10] { dict get $x name }
+} -result {Notepad} -cleanup { anndb::close $::db ; dbclean }
+
+test db-1.4 {upsert is idempotent on path (update, no duplicate)} -constraints hasext -setup {
+    dbclean ; set ::db [anndb::open [dbfile]] ; anndb::schema $::db
+} -body {
+    anndb::upsert $::db pX {Foo} shortcut path {} {} 0
+    anndb::upsert $::db pX {Foo Renamed} shortcut path {} {} 0
+    list [anndb::count $::db] [dict get [lindex [anndb::search $::db foo 5] 0] name]
+} -result {1 {Foo Renamed}} -cleanup { anndb::close $::db ; dbclean }
+
+test db-1.5 {an accented catalog entry matches a folded query} -constraints hasext -setup {
+    dbclean ; set ::db [anndb::open [dbfile]] ; anndb::schema $::db
+    anndb::upsert $::db pr {Résumé Builder} shortcut path {} {} 0
+} -body {
+    llength [anndb::search $::db resume 5]
+} -result 1 -cleanup { anndb::close $::db ; dbclean }
+
+test db-1.6 {app_meta get/set} -constraints hasext -setup {
+    dbclean ; set ::db [anndb::open [dbfile]] ; anndb::schema $::db
+} -body {
+    anndb::meta $::db last_full_scan_ts 1718000000
+    anndb::meta $::db last_full_scan_ts
+} -result 1718000000 -cleanup { anndb::close $::db ; dbclean }
+
+test db-1.7 {empty query returns top rows} -constraints hasext -setup {
+    dbclean ; set ::db [anndb::open [dbfile]] ; anndb::schema $::db
+    anndb::upsert $::db a {Alpha} shortcut path {} {} 0
+    anndb::upsert $::db b {Beta} shortcut path {} {} 0
+} -body {
+    llength [anndb::search $::db "" 10]
+} -result 2 -cleanup { anndb::close $::db ; dbclean }
+
+test db-1.8 {concurrent reader sees a committed write (WAL, no block)} -constraints hasext -setup {
+    dbclean ; set ::w [anndb::open [dbfile]] ; anndb::schema $::w
+} -body {
+    anndb::upsert $::w q1 {Alpha} shortcut path {} {} 0
+    set ::r [anndb::open [dbfile] -readonly]   ;# separate read-only connection
+    set n [anndb::count $::r]
+    anndb::close $::r
+    set n
+} -result 1 -cleanup { anndb::close $::w ; dbclean }

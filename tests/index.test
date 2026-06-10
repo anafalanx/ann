@@ -1,0 +1,292 @@
+# tests/index.test — the indexer: real app discovery (Start Menu + AppsFolder),
+# the mtime-keyed resolve cache, and the async indexer thread. These are
+# integration tests against the live machine (every Windows box has Start-Menu
+# shortcuts), gated on the C extension being built.
+
+package require tcltest
+namespace import ::tcltest::*
+
+proc ixdb {} { return [file join $::ANN_TMP ix[pid].db] }
+proc ixclean {} { foreach s {{} -wal -shm} { catch {file delete -force [ixdb]$s} } }
+
+test ix-1.1 {scan discovers Start-Menu shortcuts} -constraints hasindex -setup { ixclean } -body {
+    set st [annindex::scan [ixdb]]
+    expr {[dict get $st lnk_found] > 0 && [dict get $st lnk_resolved] > 0}
+} -result 1 -cleanup { ixclean }
+
+test ix-1.2 {mtime cache: a warm rescan re-resolves nothing} -constraints hasindex -setup { ixclean } -body {
+    annindex::scan [ixdb]
+    set st [annindex::scan [ixdb]]
+    list [expr {[dict get $st lnk_resolved] == 0}] [expr {[dict get $st lnk_cached] > 0}]
+} -result {1 1} -cleanup { ixclean }
+
+test ix-1.3 {scanned catalog is non-empty and searchable} -constraints hasindex -setup {
+    ixclean ; annindex::scan [ixdb] ; set ::c [anndb::open [ixdb] -readonly]
+} -body {
+    expr {[anndb::count $::c] > 0}
+} -result 1 -cleanup { anndb::close $::c ; ixclean }
+
+test ix-1.4 {a resolved shortcut keeps its launchable .lnk path} -constraints hasindex -setup {
+    ixclean ; annindex::scan [ixdb] ; set ::c [anndb::open [ixdb] -readonly]
+} -body {
+    # every shortcut row's launch is 'path' and points at a .lnk we can ShellExecute
+    set rows [anndb::search $::c "" 200]
+    set bad 0
+    foreach r $rows {
+        if {[dict get $r kind] eq "shortcut" && [dict get $r launch] ne "path"} { incr bad }
+    }
+    set bad
+} -result 0 -cleanup { anndb::close $::c ; ixclean }
+
+# ---- M7: file/folder indexing under the (hermetic) watched roots --------------
+test ix-2.1 {a file in a watched root is scanned and searchable} -constraints hasindex -setup {
+    ixclean
+    set fh [open [file join $::ANN_FSROOT uniqfile_alpha.txt] w] ; puts $fh hi ; close $fh
+} -body {
+    set st [annindex::scan [ixdb]]
+    set c [anndb::open [ixdb] -readonly]
+    set hits [anndb::search $c uniqfile 5]
+    set r [lindex $hits 0]
+    set out [list [expr {[dict get $st files_found] > 0}] [dict get $r name] [dict get $r kind]]
+    anndb::close $c
+    set out
+} -result {1 uniqfile_alpha.txt file} -cleanup {
+    catch {file delete -force [file join $::ANN_FSROOT uniqfile_alpha.txt]} ; ixclean
+}
+
+test ix-2.2 {system commands are seeded (fixed list, DESIGN §8)} -constraints hasindex -setup {
+    ixclean ; annindex::scan [ixdb] ; set ::c [anndb::open [ixdb] -readonly]
+} -body {
+    set lock [lindex [anndb::search $::c lock 5] 0]
+    list [anndb::count $::c system_cmd] [dict get $lock name] [dict get $lock launch]
+} -result {8 {Lock Workstation} syscmd} -cleanup { anndb::close $::c ; ixclean }
+
+# count rows whose NAME is exactly $name (queries can legitimately fallback-match
+# other rows via their target paths, so a bare llength is not a valid assertion)
+proc ix_named {conn query name} {
+    llength [lsearch -all [lmap r [anndb::search $conn $query 50] { dict get $r name }] $name]
+}
+
+test ix-2.3 {prune: a deleted file's row disappears on the next scan} -constraints hasindex -setup {
+    ixclean
+    set fh [open [file join $::ANN_FSROOT zqxprunefile.txt] w] ; puts $fh x ; close $fh
+} -body {
+    annindex::scan [ixdb]
+    set c [anndb::open [ixdb] -readonly]
+    set before [ix_named $c zqxprunefile zqxprunefile.txt]
+    anndb::close $c
+    file delete -force [file join $::ANN_FSROOT zqxprunefile.txt]
+    after 1100              ;# generation stamps are second-granular
+    annindex::scan [ixdb]
+    set c [anndb::open [ixdb] -readonly]
+    set after_ [ix_named $c zqxprunefile zqxprunefile.txt]
+    anndb::close $c
+    list $before $after_
+} -result {1 0} -cleanup { ixclean }
+
+test ix-2.4 {watcher: a created file appears via targeted update, a deleted one goes} -constraints hasindex -setup {
+    ixclean
+    set ::ixn 0 ; proc ::onix {} { incr ::ixn }
+    annindex::start [ixdb] ::onix
+    set t0 [clock milliseconds]
+    while {$::ixn < 1 && [clock milliseconds] - $t0 < 30000} { update ; after 50 }
+    set ::c [anndb::open [ixdb] -readonly]
+} -body {
+    set f [file join $::ANN_FSROOT zqxwatched.txt]
+    set fh [open $f w] ; puts $fh x ; close $fh
+    set t0 [clock milliseconds] ; set found 0
+    while {!$found && [clock milliseconds] - $t0 < 6000} {
+        update ; after 100
+        set found [ix_named $::c zqxwatched zqxwatched.txt]
+    }
+    file delete -force $f
+    set t0 [clock milliseconds] ; set gone 0
+    while {!$gone && [clock milliseconds] - $t0 < 6000} {
+        update ; after 100
+        set gone [expr {[ix_named $::c zqxwatched zqxwatched.txt] == 0}]
+    }
+    list $found $gone
+} -result {1 1} -cleanup {
+    catch {anndb::close $::c} ; catch {annindex::stop} ; ixclean
+}
+
+test ix-1.6 {frecency write path: record_usage floats the app to the empty-query top} -constraints hasindex -setup { ixclean } -body {
+    set ::ixd 0 ; proc ::onx {} { set ::ixd 1 }
+    annindex::start [ixdb] ::onx
+    set t0 [clock milliseconds] ; while {!$::ixd && [clock milliseconds]-$t0 < 30000} { update ; after 50 }
+    set ::ixr [anndb::open [ixdb] -readonly]
+    set hit [lindex [anndb::search $::ixr calc 1] 0]
+    set id [dict get $hit id] ; set nm [dict get $hit name]
+    set ::ixd 0
+    annindex::record_usage $id
+    set t0 [clock milliseconds] ; while {!$::ixd && [clock milliseconds]-$t0 < 5000} { update ; after 30 }
+    anndb::close $::ixr ; set ::ixr ""
+    set ::ixr [anndb::open [ixdb] -readonly]
+    set top [dict get [lindex [anndb::search $::ixr "" 1] 0] name]
+    expr {$top eq $nm}
+} -result 1 -cleanup {
+    catch {if {$::ixr ne ""} { anndb::close $::ixr }} ; catch {annindex::stop} ; ixclean
+}
+
+test ix-1.5 {async indexer: start -> GUI notify -> stop} -constraints hasindex -setup { ixclean } -body {
+    set ::ixdone 0
+    proc ::on_ix {} { set ::ixdone 1 }
+    annindex::start [ixdb] ::on_ix
+    set active [annindex::active]
+    set t0 [clock milliseconds]
+    while {!$::ixdone && [clock milliseconds] - $t0 < 30000} { update ; after 50 }
+    annindex::stop
+    list $::ixdone $active [annindex::active]
+} -result {1 1 0} -cleanup { catch {annindex::stop} ; ixclean }
+
+# ---- two-tier full-disk indexing (DESIGN §7.2 amendment) ----------------------
+test tier-1.1 {priority locations index first-class (tier 0, every ext); bulk is allow-listed tier 1} -constraints hasext -setup {
+    set ::tdb [file join $::ANN_TMP tier[pid].db]
+    foreach s {{} -wal -shm} { catch {file delete -force $::tdb$s} }
+    set top [file join $::ANN_FSROOT tierroot]
+    file mkdir $top [file join $top prio] [file join $top deep]
+    set fh [open [file join $top prio app.exe] w]; close $fh
+    set fh [open [file join $top prio raw.xyz] w]; close $fh      ;# tier0: any ext
+    set fh [open [file join $top deep doc.pdf] w]; close $fh      ;# tier1: allowed
+    set fh [open [file join $top deep junk.xyz] w]; close $fh     ;# tier1: denied ext
+    file mkdir [file join $top deep node_modules]
+    set fh [open [file join $top deep node_modules pkg.exe] w]; close $fh  ;# denied dir
+    annindex::set_roots [list $top]
+    annindex::set_priority [list [file join $top prio]]
+    annindex::tune bulk_sleep 0
+} -body {
+    annindex::scan $::tdb
+    set c [anndb::open $::tdb -readonly]
+    set out {}
+    foreach {name want} {app.exe 0 raw.xyz 0 doc.pdf 1} {
+        set row [anndb::get $c [file nativename [file join $::ANN_FSROOT tierroot \
+            [expr {$want ? "deep" : "prio"}] $name]]]
+        lappend out [dict get $row tier]
+    }
+    lappend out [ix_named $c junk.xyz junk.xyz] [ix_named $c pkg.exe pkg.exe]
+    anndb::close $c
+    set out
+} -result {0 0 1 0 0} -cleanup {
+    annindex::set_priority default
+    annindex::set_roots [list $::ANN_FSROOT]
+    file delete -force [file join $::ANN_FSROOT tierroot]
+    foreach s {{} -wal -shm} { catch {file delete -force $::tdb$s} }
+}
+
+test tier-1.2 {per-tier prune: a deleted bulk file vanishes after a clean rescan} -constraints hasext -setup {
+    set ::tdb [file join $::ANN_TMP tier[pid].db]
+    foreach s {{} -wal -shm} { catch {file delete -force $::tdb$s} }
+    set top [file join $::ANN_FSROOT tierroot2]
+    file mkdir $top [file join $top prio] [file join $top deep]
+    set fh [open [file join $top prio keep.txt] w]; close $fh
+    set fh [open [file join $top deep gone.pdf] w]; close $fh
+    annindex::set_roots [list $top]
+    annindex::set_priority [list [file join $top prio]]
+    annindex::tune bulk_sleep 0
+    annindex::scan $::tdb
+} -body {
+    file delete [file join $top deep gone.pdf]
+    annindex::scan $::tdb
+    set c [anndb::open $::tdb -readonly]
+    set out [list [ix_named $c gone.pdf gone.pdf] [ix_named $c keep.txt keep.txt]]
+    anndb::close $c
+    set out
+} -result {0 1} -cleanup {
+    annindex::set_priority default
+    annindex::set_roots [list $::ANN_FSROOT]
+    file delete -force [file join $::ANN_FSROOT tierroot2]
+    foreach s {{} -wal -shm} { catch {file delete -force $::tdb$s} }
+}
+
+test tier-1.3 {stats expose the phase split and completion} -constraints hasext -setup {
+    set ::tdb [file join $::ANN_TMP tier[pid].db]
+    foreach s {{} -wal -shm} { catch {file delete -force $::tdb$s} }
+    set top [file join $::ANN_FSROOT tierroot3]
+    file mkdir $top [file join $top prio]
+    set fh [open [file join $top prio a.txt] w]; close $fh
+    set fh [open [file join $top b.pdf] w]; close $fh
+    annindex::set_roots [list $top]
+    annindex::set_priority [list [file join $top prio]]
+    annindex::tune bulk_sleep 0
+} -body {
+    set st [annindex::scan $::tdb]
+    list [dict get $st files_prio] [dict get $st files_bulk] \
+         [dict get $st bulk_done] [dict get $st bulk_aborted]
+} -result {1 1 1 0} -cleanup {
+    annindex::set_priority default
+    annindex::set_roots [list $::ANN_FSROOT]
+    file delete -force [file join $::ANN_FSROOT tierroot3]
+    foreach s {{} -wal -shm} { catch {file delete -force $::tdb$s} }
+}
+
+test tier-2.1 {drives lists fixed disks; default roots equal them} -constraints hasext -body {
+    set d [annindex::drives]
+    list [expr {[llength $d] >= 1}] [expr {"C:\\" in $d}]
+} -result {1 1}
+
+test tier-2.2 {priority_paths resolve to existing dirs} -constraints hasext -body {
+    set ok 1
+    foreach p [annindex::priority_paths] { if {![file isdirectory $p]} { set ok 0 } }
+    list [expr {[llength [annindex::priority_paths]] >= 3}] $ok
+} -result {1 1}
+
+# ---- tiered search recall (anndb) ---------------------------------------------
+test tier-3.1 {tier-1 rows: trigram recall >=3 chars, prefix at 2, subsequence never} -constraints hasext -setup {
+    set ::sdb [file join $::ANN_TMP tsearch[pid].db]
+    foreach s {{} -wal -shm} { catch {file delete -force $::sdb$s} }
+    set ::c [anndb::open $::sdb] ; anndb::schema $::c
+    anndb::upsert $::c p0 {Visual Studio Code} shortcut path {} {} 0
+    anndb::upsert $::c p1 {Mahlzeitenplan.pdf} file path {} {} 0
+    anndb::exec $::c "UPDATE catalog SET tier=1 WHERE path='p1'"
+} -body {
+    list [llength [anndb::search $::c mahl 9]] \
+         [llength [anndb::search $::c ma 9]] \
+         [llength [anndb::search $::c zeitenplan 9]] \
+         [expr {[llength [anndb::search $::c mhlzpln 9]] == 0}] \
+         [dict get [lindex [anndb::search $::c vsc 9] 0] name]
+} -result {1 1 1 1 {Visual Studio Code}} -cleanup {
+    anndb::close $::c
+    foreach s {{} -wal -shm} { catch {file delete -force $::sdb$s} }
+}
+
+test tier-3.2 {equal rows: the tier-0 one outranks; empty query hides frecency-less tier-1} -constraints hasext -setup {
+    set ::sdb [file join $::ANN_TMP tsearch2[pid].db]
+    foreach s {{} -wal -shm} { catch {file delete -force $::sdb$s} }
+    set ::c [anndb::open $::sdb] ; anndb::schema $::c
+    anndb::upsert $::c fast {Report Alpha} file path {} {} 0
+    anndb::upsert $::c deep {Report Alpha} file path {} {} 0
+    anndb::exec $::c "UPDATE catalog SET tier=1 WHERE path='deep'"
+} -body {
+    set r [anndb::search $::c report 9]
+    set empty [anndb::search $::c "" 9]
+    list [dict get [lindex $r 0] path] [llength $r] \
+         [lmap x $empty {dict get $x path}]
+} -result {fast 2 fast} -cleanup {
+    anndb::close $::c
+    foreach s {{} -wal -shm} { catch {file delete -force $::sdb$s} }
+}
+
+test tier-1.4 {a capped priority location's tail lands in the bulk tier} -constraints hasext -setup {
+    set ::tdb [file join $::ANN_TMP tier4[pid].db]
+    foreach s {{} -wal -shm} { catch {file delete -force $::tdb$s} }
+    set top [file join $::ANN_FSROOT tierroot4]
+    file mkdir $top [file join $top prio]
+    foreach n {a1.txt a2.txt a3.pdf} {
+        set fh [open [file join $top prio $n] w]; close $fh
+    }
+    annindex::set_roots [list $top]
+    annindex::set_priority [list [file join $top prio]]
+    annindex::tune bulk_sleep 0
+    annindex::tune prio_each 2
+} -body {
+    set st [annindex::scan $::tdb]
+    # 2 tier-0 slots used, capped; the remaining allow-listed file is tier 1
+    list [dict get $st files_prio] [dict get $st capped_prio] \
+         [expr {[dict get $st files_bulk] >= 1}]
+} -result {2 1 1} -cleanup {
+    annindex::tune prio_each 8000
+    annindex::set_priority default
+    annindex::set_roots [list $::ANN_FSROOT]
+    file delete -force [file join $::ANN_FSROOT tierroot4]
+    foreach s {{} -wal -shm} { catch {file delete -force $::tdb$s} }
+}

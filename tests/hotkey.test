@@ -1,0 +1,70 @@
+# tests/hotkey.test — the global-hotkey layer: chord parsing (pure Tcl) and the
+# C path (register/rebind/stop, single-instance mutex) on an obscure chord + a
+# unique tag so it never collides with a live instance.
+
+package require tcltest
+namespace import ::tcltest::*
+
+# ---- chord parsing (pure Tcl, always available) -----------------------------
+test parse-1.1 {Alt+Space} -body { ann::parse_hotkey "Alt+Space" } -result {1 32}
+test parse-1.2 {Ctrl+Alt+Shift+F24 -> mods 7, vk 0x87} -body {
+    ann::parse_hotkey "Ctrl+Alt+Shift+F24"
+} -result {7 135}
+test parse-1.3 {Win+space, case-insensitive modifiers} -body {
+    ann::parse_hotkey "win+SPACE"
+} -result {8 32}
+test parse-1.4 {Ctrl+Q -> mods 2, vk VK_Q (0x51)} -body { ann::parse_hotkey "Ctrl+Q" } -result {2 81}
+test parse-1.5 {single letter maps to its VK} -body { ann::vk_for a } -result 65
+test parse-1.6 {F1 is 0x70} -body { ann::vk_for F1 } -result 112
+test parse-1.7 {digit maps to its VK} -body { ann::vk_for 5 } -result 53
+test parse-2.1 {no key is an error} -body {
+    catch {ann::parse_hotkey "Ctrl+Alt"} e ; set e
+} -match glob -result "*no key*"
+test parse-2.2 {unknown key is an error} -body {
+    catch {ann::parse_hotkey "Ctrl+Nope"} e ; set e
+} -match glob -result "*unknown key*"
+test parse-2.3 {two keys is an error} -body {
+    catch {ann::parse_hotkey "a+b"} e ; set e
+} -match glob -result "*more than one key*"
+
+# ---- install tag ------------------------------------------------------------
+test tag-1.1 {instance tag is 8 hex chars} -body {
+    regexp {^[0-9a-f]{8}$} [ann::instance_tag]
+} -result 1
+
+# ---- C path: register / rebind / stop, single-instance ----------------------
+# Obscure chord + per-pid tag so we never fight a running ann.
+test hk-1.1 {single-instance mutex: first acquirer wins} -constraints hashotkey -body {
+    annhotkey::acquire "test[pid]a"
+} -result 1
+test hk-1.2 {register an obscure global hotkey} -constraints hashotkey -setup {
+    lassign [ann::parse_hotkey "Ctrl+Alt+Shift+F24"] ::m ::v
+} -body {
+    annhotkey::start $::m $::v "test[pid]b" ::ann::_noop ::ann::_noop
+} -result ok -cleanup { catch {annhotkey::stop} }
+test hk-1.3 {active reflects running state across start/stop} -constraints hashotkey -body {
+    lassign [ann::parse_hotkey "Ctrl+Alt+Shift+F24"] m v
+    set seq {}
+    lappend seq [annhotkey::active]
+    annhotkey::start $m $v "test[pid]c" ::ann::_noop ::ann::_noop
+    lappend seq [annhotkey::active]
+    annhotkey::stop
+    lappend seq [annhotkey::active]
+    set seq
+} -result {0 1 0}
+test hk-1.4 {rebind unregisters old then registers new} -constraints hashotkey -setup {
+    lassign [ann::parse_hotkey "Ctrl+Alt+Shift+F24"] ::m ::v
+    annhotkey::start $::m $::v "test[pid]d" ::ann::_noop ::ann::_noop
+} -body {
+    lassign [ann::parse_hotkey "Ctrl+Alt+Shift+F23"] m2 v2
+    annhotkey::rebind $m2 $v2
+} -result ok -cleanup { catch {annhotkey::stop} }
+test hk-1.5 {double start is rejected} -constraints hashotkey -setup {
+    lassign [ann::parse_hotkey "Ctrl+Alt+Shift+F24"] ::m ::v
+    annhotkey::start $::m $::v "test[pid]e" ::ann::_noop ::ann::_noop
+} -body {
+    catch {annhotkey::start $::m $::v "test[pid]e" ::ann::_noop ::ann::_noop} e ; set e
+} -match glob -result "*already started*" -cleanup { catch {annhotkey::stop} }
+test hk-1.6 {signal to a nonexistent instance returns 0} -constraints hashotkey -body {
+    annhotkey::signal "nosuchtag[pid]"
+} -result 0

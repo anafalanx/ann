@@ -1,0 +1,14 @@
+# Normalize line endings: store LF, check out LF (no CRLF churn).
+* text=auto eol=lf
+
+# Windows batch scripts must stay CRLF.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary assets — never touch.
+*.png  binary
+*.ico  binary
+*.dll  binary
+*.exe  binary
+*.a    binary
+*.db   binary

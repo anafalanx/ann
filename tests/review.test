@@ -1,0 +1,187 @@
+# tests/review.test — regression tests for the confirmed findings of the deep
+# review (each test names its finding number). These lock the fixes in place.
+
+package require tcltest
+namespace import ::tcltest::*
+
+proc rvdb {} { return [file join $::ANN_TMP rv[pid].db] }
+proc rvclean {} { foreach s {{} -wal -shm} { catch {file delete -force [rvdb]$s} } }
+
+# ---- #5: non-ASCII queries (the LIKE pattern must not split UTF-8) -----------
+test rv-5.1 {Cyrillic query finds a Cyrillic name} -constraints hasext -setup {
+    rvclean ; set ::db [anndb::open [rvdb]] ; anndb::schema $::db
+    anndb::upsert $::db p1 "Тестовая Программа" shortcut path {} {} 0
+} -body {
+    llength [anndb::search $::db "тест" 5]
+} -result 1 -cleanup { anndb::close $::db ; rvclean }
+
+# ---- #8: query whitespace is trimmed (DESIGN §6.1 stage [0]) -----------------
+test rv-8.1 {trailing space does not kill the match} -constraints hasext -setup {
+    rvclean ; set ::db [anndb::open [rvdb]] ; anndb::schema $::db
+    anndb::upsert $::db p1 {Google Chrome} shortcut path {} {} 0
+} -body {
+    list [llength [anndb::search $::db "chrome " 5]] [llength [anndb::search $::db " chrome" 5]]
+} -result {1 1} -cleanup { anndb::close $::db ; rvclean }
+
+# ---- #22: target/keyword-only matches are recalled (with a penalty) ----------
+test rv-22.1 {a query matching only the target still finds the row} -constraints hasext -setup {
+    rvclean ; set ::db [anndb::open [rvdb]] ; anndb::schema $::db
+    anndb::upsert $::db p1 {Foo} shortcut path {C:\bin\supertool.exe} {} 0
+    anndb::upsert $::db p2 {Supertool} shortcut path {} {} 0
+} -body {
+    set r [anndb::search $::db supertool 5]
+    list [llength $r] [dict get [lindex $r 0] name]
+} -result {2 Supertool} -cleanup { anndb::close $::db ; rvclean }
+
+# ---- #23: long names score correctly (heap fold; window now 512) -------------
+test rv-23.1 {a 400-char name with the token past byte 256 is found} -constraints hasext -setup {
+    rvclean ; set ::db [anndb::open [rvdb]] ; anndb::schema $::db
+    set pad [string repeat "x" 300]
+    anndb::upsert $::db p1 "$pad uniquetoken" shortcut path {} {} 0
+} -body {
+    llength [anndb::search $::db uniquetoken 5]
+} -result 1 -cleanup { anndb::close $::db ; rvclean }
+
+# ---- #35: upsert returns the row's true id on the UPDATE branch --------------
+test rv-35.1 {re-upsert of an existing path returns its original id} -constraints hasext -setup {
+    rvclean ; set ::db [anndb::open [rvdb]] ; anndb::schema $::db
+} -body {
+    set idA [anndb::upsert $::db pA {Alpha} shortcut path {} {} 0]
+    set idB [anndb::upsert $::db pB {Beta}  shortcut path {} {} 0]
+    set idA2 [anndb::upsert $::db pA {Alpha Renamed} shortcut path {} {} 0]
+    list [expr {$idA2 == $idA}] [expr {$idB != $idA}]
+} -result {1 1} -cleanup { anndb::close $::db ; rvclean }
+
+# ---- #26: a write on a read-only connection errors instead of lying ----------
+test rv-26.1 {meta set on the read-only reader raises an error} -constraints hasext -setup {
+    rvclean ; set ::w [anndb::open [rvdb]] ; anndb::schema $::w
+    set ::r [anndb::open [rvdb] -readonly]
+} -body {
+    catch {anndb::meta $::r somekey somevalue}
+} -result 1 -cleanup { anndb::close $::r ; anndb::close $::w ; rvclean }
+
+# ---- #11: frecency actually DECAYS over time ----------------------------------
+test rv-11.1 {an aged-14d anchor of 8 ranks below a fresh anchor of 5} -constraints hasext -setup {
+    rvclean ; set ::db [anndb::open [rvdb]] ; anndb::schema $::db
+    anndb::upsert $::db p1 {Test App One} shortcut path {} {} 0
+    anndb::upsert $::db p2 {Test App Two} shortcut path {} {} 0
+    set id1 [dict get [anndb::get $::db p1] id]
+    set id2 [dict get [anndb::get $::db p2] id]
+    set now [clock seconds]
+    set aged [expr {$now - 14*86400}]
+    anndb::exec $::db "INSERT INTO frecency(catalog_id,decayed_score,last_event_ts) VALUES($id1,8.0,$aged)"
+    anndb::exec $::db "INSERT INTO frecency(catalog_id,decayed_score,last_event_ts) VALUES($id2,5.0,$now)"
+} -body {
+    # aged 8.0 decays to ~4.0 (one half-life) < fresh 5.0
+    dict get [lindex [anndb::search $::db {test app} 5] 0] name
+} -result {Test App Two} -cleanup { anndb::close $::db ; rvclean }
+
+# ---- #40: bucketize emits strict apps -> windows -> files order ---------------
+test rv-40.1 {composed list never interleaves buckets} -body {
+    set c {}
+    foreach k {file app window app file window app} {
+        lappend c [dict create name x kind $k path p score 1]
+    }
+    set kinds [lmap r [ann::bucketize $c 7] { dict get $r kind }]
+    set order {}
+    foreach k $kinds { if {$k ni $order} { lappend order $k } }
+    list $kinds $order
+} -result {{app app app window window file file} {app window file}}
+test rv-40.2 {limit 1 goes to the apps bucket} -body {
+    set c [list [dict create name w kind window path p score 9] \
+               [dict create name a kind app path p score 1]]
+    lmap r [ann::bucketize $c 1] { dict get $r kind }
+} -result {app}
+
+# ---- #6: instance_tag survives non-Latin-1 install paths ----------------------
+test rv-6.1 {instance tag is computable for a Cyrillic path} -body {
+    set save $::ann::dir
+    set ::ann::dir "C:\\Users\\иван\\dev\\ann"
+    set tag [ann::instance_tag]
+    set ::ann::dir $save
+    regexp {^[0-9a-f]{8}$} $tag
+} -result 1
+
+# ---- #4/#9/#10: hotkey failure paths + single-instance signal -----------------
+test rv-4.1 {start fails on an occupied chord; retry succeeds after release} -constraints hashotkey -body {
+    lassign [ann::parse_hotkey "Ctrl+Alt+Shift+F22"] m v
+    annhotkey::occupy $m $v
+    set rc1 [catch {annhotkey::start $m $v "rvA[pid]" ::ann::_noop ::ann::_noop} e1]
+    set act1 [annhotkey::active]
+    annhotkey::release_occupied
+    set rc2 [catch {annhotkey::start $m $v "rvA[pid]" ::ann::_noop ::ann::_noop} e2]
+    set act2 [annhotkey::active]
+    catch {annhotkey::stop}
+    list $rc1 [string match "*RegisterHotKey failed*" $e1] $act1 $rc2 $act2
+} -result {1 1 0 0 1}
+
+test rv-9.1 {rebind onto an occupied chord fails, old chord stays active} -constraints hashotkey -body {
+    lassign [ann::parse_hotkey "Ctrl+Alt+Shift+F22"] m1 v1
+    lassign [ann::parse_hotkey "Ctrl+Alt+Shift+F21"] m2 v2
+    annhotkey::start $m1 $v1 "rvB[pid]" ::ann::_noop ::ann::_noop
+    annhotkey::occupy $m2 $v2
+    set rc [catch {annhotkey::rebind $m2 $v2} e]
+    set stillActive [annhotkey::active]
+    annhotkey::release_occupied
+    set rc2 [catch {annhotkey::rebind $m2 $v2} e2]
+    catch {annhotkey::stop}
+    list $rc [string match "*in use*" $e] $stillActive $rc2
+} -result {1 1 1 0}
+
+test rv-10.1 {second acquire of the same tag loses; signal reaches the showCb} -constraints hashotkey -body {
+    set tag "rvC[pid]"
+    set first [annhotkey::acquire $tag]
+    set second [annhotkey::acquire $tag]
+    lassign [ann::parse_hotkey "Ctrl+Alt+Shift+F22"] m v
+    set ::rv_show_fired 0
+    proc ::rv_on_show {} { set ::rv_show_fired 1 }
+    annhotkey::start $m $v $tag ::ann::_noop ::rv_on_show
+    annhotkey::signal $tag
+    set t0 [clock milliseconds]
+    while {!$::rv_show_fired && [clock milliseconds] - $t0 < 3000} { update ; after 20 }
+    catch {annhotkey::stop}
+    list $first $second $::rv_show_fired
+} -result {1 0 1}
+
+# ---- second-review regressions (v1 fleet) -------------------------------------
+test rv2-1.1 {quote_arg is CommandLineToArgvW-correct} -body {
+    list [ann::quote_arg "C:\\My Dir\\"] [ann::quote_arg "say \"hi\""] [ann::quote_arg ""] [ann::quote_arg plain]
+} -result [list "\"C:\\My Dir\\\\\"" "\"say \\\"hi\\\"\"" "\"\"" plain]
+
+test rv2-1.2 {bad option values are rejected without aborting the load} -body {
+    set keep $::ann::confirm_destructive
+    ann::apply_option confirm_destructive "not-a-bool"
+    ann::apply_option watched_roots "\{unbalanced"
+    set out [expr {$::ann::confirm_destructive == $keep}]
+    set out
+} -result 1
+
+test rv2-1.3 {a strong provider result outranks a weak app match (per-bucket sort)} -body {
+    set weak   [dict create id a name Weak  path a kind app launch path target {} score 0.2]
+    set strong [dict create id b name Strong path b kind app launch path target {} score 2.5]
+    lmap r [ann::bucketize [list $weak $strong] 9] { dict get $r name }
+} -result {Strong Weak}
+
+test rv2-1.4 {catalog update with the panel open leaves the panel alone} -body {
+    ann::build
+    wm deiconify .
+    set ::ann::results [list [dict create id 1 name N path P kind app launch path target {} score 1]]
+    set ::ann::sel 0
+    ann::render_results
+    ann::key_nav tab
+    set was $::ann::panel_open
+    set ::ann::visible 1
+    ann::on_catalog_updated
+    set still $::ann::panel_open
+    ann::key_nav escape
+    list $was $still
+} -result {1 1} -cleanup { set ::ann::results {} ; ann::panel_close ; set ::ann::visible 0 }
+
+test rv2-1.5 {an aliased command-prefix pin survives the bucket sort} -body {
+    set strong [dict create id b name Strong path b kind app launch path target {} score 99]
+    set ::ann::aliases {}
+    ann::alias zz [list ::ann::_noop]
+    set top [lindex [ann::rank [list $strong] zz] 0]
+    set ::ann::aliases {}
+    dict get $top id
+} -result alias:zz

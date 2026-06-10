@@ -1,0 +1,46 @@
+# vendored toolchain (gcc/C23 + Tcl/Tk 9 + SQLite) — huge, machine-built.
+# Self-contained per the methodology: the folder is copy-paste portable, so the
+# toolchain travels by copying the folder, NOT by `git clone`.
+/.toolchain/
+
+# Claude local settings
+/.claude/
+
+# scratch / test artifacts
+*-selftest.txt
+*-result.txt
+*-shot.png
+/smoke.tcl
+/tests/_tmp/
+
+# large generated sample files for manual testing
+/samples/
+
+# compiled C objects / build output (rebuilt via `x build`). The native build's
+# generated PE resource inputs (ann.rc, ann.exe.manifest, ann.ico — emitted from
+# Tcl by tools/genres.tcl + tools/mkico.tcl) land here too.
+/build/
+
+# the native single-file exe (rebuilt via `x build`; ship via releases) + the
+# console-subsystem debug twin (`x build-con`)
+/ann.exe
+/ann-con.exe
+
+# runtime log + headless selftest reports (written next to the exe / in dev root)
+/ann.log
+/*-selftest.txt
+
+# release staging dir: `x build` writes dist/ann.exe here so a running ann.exe is
+# never disturbed
+/dist/
+
+# runtime data created next to the exe (and during dev runs in the repo root)
+/ann.config.tcl
+/ann.db
+/ann.db-wal
+/ann.db-shm
+
+# OS / editor cruft
+*~
+Thumbs.db
+desktop.ini

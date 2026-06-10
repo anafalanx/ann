@@ -1,0 +1,190 @@
+# tests/config.test — M8: the Tcl config surface (§11): first-run template,
+# staged/atomic load (bad config keeps the old one), options applied, aliases in
+# all three target forms, providers, panel actions, and the hot-reload hotkey
+# rebind (old chord unregistered first — §11.2).
+
+package require tcltest
+namespace import ::tcltest::*
+
+# Each test gets a fresh config home; apply_hotkey is recorded, not executed
+# (the real rebind path is tested explicitly at the end with obscure chords).
+proc cfg_home {} {
+    set d [file join $::ANN_TMP cfghome[pid]]
+    file delete -force $d ; file mkdir $d
+    set ::ann::dir $d
+    return $d
+}
+proc cfg_write {content} {
+    set fh [open [ann::config_path] w]
+    fconfigure $fh -encoding utf-8 -translation lf
+    puts $fh $content ; close $fh
+}
+proc cfg_stub_hotkey {} {
+    rename ::ann::apply_hotkey ::ann::apply_hotkey_real
+    proc ::ann::apply_hotkey {} { lappend ::cfg_hk_calls $::ann::hotkey ; return 1 }
+    set ::cfg_hk_calls {}
+}
+proc cfg_unstub_hotkey {} {
+    catch { rename ::ann::apply_hotkey "" ; rename ::ann::apply_hotkey_real ::ann::apply_hotkey }
+}
+proc cfg_reset {} {
+    set ::ann::aliases {} ; set ::ann::providers {} ; set ::ann::cfg_actions {}
+}
+
+test cfg-1.1 {first run writes the template and loads it} -setup {
+    cfg_home ; cfg_stub_hotkey ; cfg_reset
+} -body {
+    set ok [ann::load_config]
+    list $ok [file exists [ann::config_path]] $::ann::hotkey \
+         [dict exists $::ann::aliases cfg] $::cfg_hk_calls
+} -result {1 1 Alt+Space 1 Alt+Space} -cleanup { cfg_unstub_hotkey }
+
+test cfg-1.2 {a broken config is rejected and the previous state survives} -setup {
+    cfg_home ; cfg_stub_hotkey ; cfg_reset
+    ann::load_config                       ;# good template first
+    set ::ann::result_limit 9
+    cfg_write "ann::option result_limit 5\nthis is not valid tcl \[unclosed"
+} -body {
+    set ok [ann::load_config]
+    list $ok $::ann::result_limit [dict exists $::ann::aliases cfg]
+} -result {0 9 1} -cleanup { cfg_unstub_hotkey }
+
+test cfg-1.3 {reload applies changed options} -setup {
+    cfg_home ; cfg_stub_hotkey ; cfg_reset
+    cfg_write "ann::option result_limit 6\nann::option confirm_destructive 0"
+} -body {
+    ann::load_config
+    list $::ann::result_limit $::ann::confirm_destructive
+} -result {6 0} -cleanup {
+    cfg_unstub_hotkey
+    set ::ann::result_limit 9 ; set ::ann::confirm_destructive 1
+    if {[winfo exists .c.list]} { ann::make_rows ; ann::render_results }
+}
+
+test cfg-1.4 {unknown options warn but never fail the load} -setup {
+    cfg_home ; cfg_stub_hotkey ; cfg_reset
+    cfg_write "ann::option no_such_option 42"
+} -body {
+    ann::load_config
+} -result 1 -cleanup { cfg_unstub_hotkey }
+
+test cfg-2.1 {alias to a plain file pins a synthesized file result} -setup {
+    cfg_reset
+    set ::cfg_f [file join $::ANN_TMP pinme.txt]
+    set fh [open $::cfg_f w] ; puts $fh x ; close $fh
+    ann::alias zz $::cfg_f
+} -body {
+    set top [lindex [ann::rank {} zz] 0]
+    list [dict get $top name] [dict get $top kind] [dict get $top path]
+} -result [list pinme.txt file [file join $::ANN_TMP pinme.txt]] -cleanup {
+    cfg_reset ; catch {file delete -force $::cfg_f}
+}
+
+test cfg-2.2 {alias to a command prefix pins a tclproc result} -setup {
+    cfg_reset
+    ann::alias go [list ::ann::_noop]
+} -body {
+    set top [lindex [ann::rank {} go] 0]
+    list [dict get $top kind] [dict get $top launch] [dict get $top script]
+} -result {app tclproc ::ann::_noop} -cleanup { cfg_reset }
+
+test cfg-3.1 {a provider's results are merged and launchable} -setup {
+    cfg_reset
+    proc ::cfg_prov {query} {
+        if {[ann::fuzzy $query "Project ann"] <= 0} { return {} }
+        return [list [ann::result -id proj:ann -name "Project ann" \
+            -subtitle "C:\\dev\\ann" -kind app -icon stock:folder \
+            -launch [list ::set ::cfg_prov_launched 1]]]
+    }
+    ann::provider projects ::cfg_prov
+} -body {
+    set cands [ann::provider_candidates "proj"]
+    set r [lindex $cands 0]
+    set ::cfg_prov_launched 0
+    ann::invoke_result $r
+    list [llength $cands] [dict get $r name] [ann::subtitle $r] [ann::icon_spec $r] $::cfg_prov_launched
+} -result {1 {Project ann} {C:\dev\ann} stock:folder 1} -cleanup { cfg_reset }
+
+test cfg-3.2 {a throwing provider is dropped for the keystroke, not fatal} -setup {
+    cfg_reset
+    proc ::cfg_bad {query} { error "boom" }
+    ann::provider bad ::cfg_bad
+} -body {
+    ann::provider_candidates "x"
+} -result {} -cleanup { cfg_reset }
+
+test cfg-4.1 {a config action appears in the panel for its kinds only} -setup {
+    cfg_reset
+    proc ::cfg_act {r} { set ::cfg_act_ran [dict get $r name] }
+    ann::action term -kinds {file folder} -label "Open in Terminal" ::cfg_act
+} -body {
+    set rf [dict create id 1 name F path P kind file launch path target {} score 1]
+    set ra [dict create id 2 name A path P kind app  launch path target {} score 1]
+    set ff [lmap a [ann::actions_for $rf] { dict get $a label }]
+    set fa [lmap a [ann::actions_for $ra] { dict get $a label }]
+    # invoke it
+    foreach a [ann::actions_for $rf] {
+        if {[dict get $a label] eq "Open in Terminal"} { uplevel #0 [dict get $a script] }
+    }
+    list [expr {"Open in Terminal" in $ff}] [expr {"Open in Terminal" in $fa}] $::cfg_act_ran
+} -result {1 0 F} -cleanup { cfg_reset }
+
+test cfg-5.1 {ann::result validates and builds the documented dict} -body {
+    set r [ann::result -id x:1 -name "X" -subtitle "sub" -kind app -launch {puts hi}]
+    list [dict get $r id] [dict get $r launch] [dict get $r script] [catch {ann::result -subtitle nope}]
+} -result {x:1 tclproc {puts hi} 1}
+
+test cfg-6.1 {watched_roots option expands %VARS% and reaches the indexer} -constraints hasindex -setup {
+    set ::cfg_save_roots [annindex::get_roots]
+} -body {
+    ann::apply_option watched_roots [list {%TEMP%} $::ANN_FSROOT]
+    set roots [annindex::get_roots]
+    # set_roots stores canonical backslash paths (catalog slash stability)
+    list [expr {[lindex $roots 0] eq [file nativename $::env(TEMP)]}] [lindex $roots 1]
+} -result [list 1 [file nativename $::ANN_FSROOT]] -cleanup {
+    annindex::set_roots [list $::ANN_FSROOT]
+}
+
+# ---- the watcher's config watch (forward-slash Tcl paths — regression) --------
+test cfg-8.1 {a config-file save triggers the config notify} -constraints hasindex -setup {
+    set ::cfg81_db [file join $::ANN_TMP cfg81.db]
+    foreach s {{} -wal -shm} { catch {file delete -force $::cfg81_db$s} }
+    set ::cfg81_path [file join $::ANN_TMP cfg81.config.tcl]
+    set fh [open $::cfg81_path w] ; puts $fh "# v1" ; close $fh
+    set ::cfg81_cat 0 ; set ::cfg81_cfg 0
+    proc ::cfg81_oncat {} { incr ::cfg81_cat }
+    proc ::cfg81_oncfg {} { incr ::cfg81_cfg }
+    annindex::start $::cfg81_db ::cfg81_oncat $::cfg81_path ::cfg81_oncfg
+    set t0 [clock milliseconds]
+    while {!$::cfg81_cat && [clock milliseconds] - $t0 < 30000} { update ; after 50 }
+} -body {
+    set fh [open $::cfg81_path a] ; puts $fh "# changed" ; close $fh
+    set t0 [clock milliseconds]
+    while {!$::cfg81_cfg && [clock milliseconds] - $t0 < 6000} { update ; after 100 }
+    expr {$::cfg81_cfg > 0}
+} -result 1 -cleanup {
+    catch {annindex::stop}
+    catch {file delete -force $::cfg81_path}
+    foreach s {{} -wal -shm} { catch {file delete -force $::cfg81_db$s} }
+}
+
+# ---- the real §11.2 rebind path: reload with a new chord, old chord released ---
+test cfg-7.1 {hot reload rebinds the hotkey; the old chord is unregistered} -constraints hashotkey -setup {
+    cfg_home ; cfg_reset
+} -body {
+    cfg_write "ann::option hotkey {Ctrl+Alt+Shift+F20}"
+    set ::ann::hotkey_active ""
+    set r1 [ann::load_config]
+    set a1 [annhotkey::active]
+    # reload with a different chord
+    cfg_write "ann::option hotkey {Ctrl+Alt+Shift+F19}"
+    set r2 [ann::load_config]
+    set a2 [annhotkey::active]
+    # the OLD chord must be free again: occupying it succeeds only if released
+    lassign [ann::parse_hotkey "Ctrl+Alt+Shift+F20"] m v
+    set freed [expr {![catch {annhotkey::occupy $m $v}]}]
+    annhotkey::release_occupied
+    list $r1 $a1 $r2 $a2 $freed
+} -result {1 1 1 1 1} -cleanup {
+    catch {annhotkey::stop} ; set ::ann::hotkey_active ""
+}

@@ -1,0 +1,187 @@
+# tests/settings.test — the tray, the titlebar-icon menu hook, and the Settings
+# dialog (managed config block, folder list editing, apply path). All headless:
+# the dialog is built WITHDRAWN and driven programmatically.
+
+package require tcltest
+namespace import ::tcltest::*
+
+::tcltest::testConstraint hassystray [expr {![catch {tk systray exists}]}]
+
+proc st_home {} {
+    set d [file join $::ANN_TMP sthome[pid]]
+    file delete -force $d ; file mkdir $d
+    set ::ann::dir $d
+    return $d
+}
+proc st_stub_hotkey {} {
+    rename ::ann::apply_hotkey ::ann::apply_hotkey_real
+    proc ::ann::apply_hotkey {} { return 1 }
+}
+proc st_unstub_hotkey {} {
+    catch { rename ::ann::apply_hotkey "" ; rename ::ann::apply_hotkey_real ::ann::apply_hotkey }
+}
+
+# ---- the managed settings block ----------------------------------------------
+test set-1.1 {settings_save appends ONE managed block and preserves user content} -setup {
+    st_home
+    set fh [open [ann::config_path] w]
+    puts $fh "# my config"
+    puts $fh "ann::option confirm_destructive 0"
+    close $fh
+} -body {
+    ann::settings_save [list {C:\one} {C:\two with space}] "Ctrl+Space" 7
+    ann::settings_save [list {C:\three}] "Alt+Space" 9     ;# idempotent: replaces
+    set fh [open [ann::config_path] r] ; set body [read $fh] ; close $fh
+    list [regexp -all {>>> ann settings} $body] \
+         [string match "*# my config*" $body] \
+         [string match "*confirm_destructive 0*" $body] \
+         [string match "*watched_roots *" $body] \
+         [string match "*C:/three*|C:\\\\three*" $body]
+} -match glob -result {1 1 1 1 *} -cleanup { }
+
+test set-1.2 {saved settings round-trip through load_config} -setup {
+    st_home ; st_stub_hotkey
+    set ::ann::result_limit 9
+} -body {
+    ann::settings_save [list $::ANN_FSROOT] "Ctrl+Alt+Shift+F18" 5
+    ann::load_config
+    list $::ann::result_limit $::ann::hotkey
+} -result {5 Ctrl+Alt+Shift+F18} -cleanup {
+    st_unstub_hotkey
+    set ::ann::result_limit 9 ; set ::ann::hotkey "Alt+Space"
+    if {[winfo exists .c.list]} { ann::make_rows ; ann::render_results }
+    catch {annindex::set_roots [list $::ANN_FSROOT]}
+}
+
+# ---- the dialog (headless) ----------------------------------------------------
+test set-2.1 {dialog builds withdrawn, lists the live roots} -setup { st_home } -body {
+    ann::settings_build
+    list [winfo exists .settings] [wm state .settings] \
+         [expr {[.settings.f.lf.list size] >= 0}]
+} -result {1 withdrawn 1} -cleanup { catch {destroy .settings} }
+
+test set-2.2 {Add folder adds (and dedups); Remove removes} -setup {
+    st_home
+    ann::settings_build
+    set ::st_dir [file join $::ANN_TMP addme]
+    file mkdir $::st_dir
+    proc ::tk_chooseDirectory {args} { return $::st_dir }
+} -body {
+    set l .settings.f.lf.list
+    set n0 [$l size]
+    ann::settings_add_folder
+    ann::settings_add_folder            ;# duplicate: ignored
+    set n1 [$l size]
+    $l selection set [expr {$n1 - 1}]
+    ann::settings_remove_folder
+    set n2 [$l size]
+    list [expr {$n1 - $n0}] [expr {$n2 - $n0}]
+} -result {1 0} -cleanup {
+    catch {destroy .settings}
+    proc ::tk_chooseDirectory {args} { return "" }
+}
+
+test set-2.3 {OK writes the block and applies the values} -setup {
+    st_home ; st_stub_hotkey
+    ann::settings_build
+} -body {
+    .settings.f.o.hk delete 0 end
+    .settings.f.o.hk insert 0 "Ctrl+Alt+Shift+F17"
+    .settings.f.o.rl set 6
+    ann::settings_apply
+    set fh [open [ann::config_path] r] ; set body [read $fh] ; close $fh
+    list [winfo exists .settings] [string match "*ann settings*" $body] \
+         $::ann::result_limit $::ann::hotkey
+} -result {0 1 6 Ctrl+Alt+Shift+F17} -cleanup {
+    st_unstub_hotkey
+    set ::ann::result_limit 9 ; set ::ann::hotkey "Alt+Space"
+    if {[winfo exists .c.list]} { ann::make_rows ; ann::render_results }
+    catch {annindex::set_roots [list $::ANN_FSROOT]}
+}
+
+# ---- the app menu ---------------------------------------------------------------
+test menu-1.1 {the ann menu carries Settings / Rescan / Quit} -body {
+    set m [ann::app_menu]
+    set labels {}
+    for {set i 0} {$i <= [$m index end]} {incr i} {
+        if {[$m type $i] eq "command"} { lappend labels [$m entrycget $i -label] }
+    }
+    set labels
+} -result {Settings… {Rescan index} {Quit ann}}
+
+# ---- the titlebar-icon hook ------------------------------------------------------
+test sysmenu-1.1 {HTSYSMENU left-click runs the ann callback, not the system menu} -constraints {hasext} -body {
+    set ::sysmenu_fired 0
+    proc ::sysmenu_probe {} { incr ::sysmenu_fired }
+    annplat::hook_sysmenu [wm frame .] ::sysmenu_probe
+    # WM_NCLBUTTONDOWN (0x00A1), wParam HTSYSMENU (3); PostMessage -> pump
+    annplat::post_message [expr {[wm frame .]}] 0x00A1 3 0
+    set t0 [clock milliseconds]
+    while {!$::sysmenu_fired && [clock milliseconds] - $t0 < 2000} { update ; after 20 }
+    set ::sysmenu_fired
+} -result 1 -cleanup {
+    catch {annplat::hook_sysmenu [wm frame .] ann::titlebar_menu}
+}
+
+# ---- the tray --------------------------------------------------------------------
+test tray-1.1 {tray icon creates and destroys} -constraints hassystray -setup {
+    # the icon file must exist where ann::dir points
+    set ::ann::dir $::ANN_ROOT
+} -body {
+    set ok [ann::tray_setup]
+    set ex [tk systray exists]
+    ann::tray_teardown
+    list $ok $ex [tk systray exists]
+} -result {1 1 0} -cleanup { catch {tk systray destroy} }
+
+# ---- no menubar: the menu lives under the titlebar icon, not on a menubar -----
+test mbar-0.1 {build attaches NO menubar to the main window (in-icon menu only)} -setup {
+    set ::ann::dir $::ANN_ROOT
+} -body {
+    ann::build
+    . cget -menu
+} -result {}
+
+# ---- coverage guidance (§7.2): the dialog points at unindexed priority dirs ---
+test cov-1.1 {path_covers: boundaries, case, slashes, drive roots} -body {
+    list [ann::path_covers "C:\\" {C:\Users\x\Desktop}] \
+         [ann::path_covers {C:\Foo} {C:\Foobar}] \
+         [ann::path_covers {C:\Foo} {C:\foo\bar}] \
+         [ann::path_covers {C:/Users} {c:\users\me}] \
+         [ann::path_covers "C:\\Users\\" {C:\Users}] \
+         [ann::path_covers {} {C:\x}]
+} -result {1 0 1 1 1 0}
+
+test cov-1.2 {uncovered_priorities + the dialog hint + Include} -setup {
+    set ::ann::dir $::ANN_ROOT
+    rename ::annindex::priority_paths ::annindex::priority_paths_real
+    proc ::annindex::priority_paths {} { return [list {C:\FakePrio\Desktop} {C:\Covered\Docs}] }
+} -body {
+    set unc [ann::uncovered_priorities [list {C:\Covered}]]
+    ann::settings_build
+    .settings.f.lf.list delete 0 end
+    .settings.f.lf.list insert end {C:\Covered}
+    ann::settings_refresh_coverage
+    set shown [expr {[winfo manager .settings.f.cov.inc] eq "grid"}]
+    set txt [.settings.f.cov.t cget -text]
+    ann::settings_include_uncovered
+    set after [ann::uncovered_priorities [.settings.f.lf.list get 0 end]]
+    set hidden [expr {[winfo manager .settings.f.cov.inc] eq ""}]
+    list $unc $shown $txt $after $hidden
+} -result [list [list {C:\FakePrio\Desktop}] 1 {Not indexed: Desktop} {} 1] -cleanup {
+    catch {destroy .settings}
+    rename ::annindex::priority_paths ""
+    rename ::annindex::priority_paths_real ::annindex::priority_paths
+}
+
+test set-4.1 {the folder-list scrollbar autohides like els} -setup { st_home } -body {
+    wm deiconify . ; update                ;# a transient of a withdrawn master never maps
+    ann::settings_build
+    wm deiconify .settings ; update
+    set few [winfo ismapped .settings.f.lf.sb]      ;# <=7 roots: hidden
+    .settings.f.lf.list delete 0 end
+    for {set i 0} {$i < 12} {incr i} { .settings.f.lf.list insert end "C:/r$i" }
+    update
+    set many [winfo ismapped .settings.f.lf.sb]
+    list $few $many
+} -result {0 1} -cleanup { catch {destroy .settings} }

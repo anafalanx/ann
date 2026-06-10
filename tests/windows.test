@@ -1,0 +1,197 @@
+# tests/windows.test — M5 (running-windows switcher, launch hardening) and
+# M6 (action panel, system commands). Window tests drive a real spawned Notepad;
+# destructive system commands are exercised in -dryrun only (never executed).
+
+package require tcltest
+namespace import ::tcltest::*
+
+# Spawn a Notepad WINDOW and return its enumeration dict. Store Notepad is a
+# single multi-window process: the exec pid is a short-lived launcher, so pid
+# bookkeeping is worthless — identify OUR window as the hwnd that was not there
+# before, and close exactly that one (np_close).
+proc np_hwnds {} {
+    set out {}
+    foreach w [annplat::windows] {
+        if {[string match -nocase "*notepad*" [dict get $w exe]]} {
+            lappend out [dict get $w hwnd]
+        }
+    }
+    return $out
+}
+proc np_spawn {} {
+    set pre [np_hwnds]
+    exec notepad.exe &
+    set t0 [clock milliseconds]
+    while {[clock milliseconds] - $t0 < 8000} {
+        foreach w [annplat::windows] {
+            if {[string match -nocase "*notepad*" [dict get $w exe]]
+                    && [dict get $w hwnd] ni $pre} { return $w }
+        }
+        after 100
+    }
+    error "notepad window never appeared"
+}
+# Close OUR spawned window (always a blank Untitled tab) via WM_CLOSE and FAIL
+# LOUDLY if it survives — a silent leak here put dozens of Notepad windows on
+# the user's desktop once.
+proc np_close {w} {
+    if {$w eq ""} return
+    set h [dict get $w hwnd]
+    catch {annplat::close_window $h}
+    set t0 [clock milliseconds]
+    while {[clock milliseconds] - $t0 < 4000} {
+        if {$h ni [np_hwnds]} return
+        after 100
+    }
+    return -code error "spawned notepad window $h did not close"
+}
+
+# ---- enumeration filter (§7.3) ------------------------------------------------
+test win-1.1 {enumeration returns titled, visible windows with exe names} -constraints hasext -setup {
+    set ::npwin [np_spawn]
+} -body {
+    expr {[dict get $::npwin title] ne "" && [string match -nocase "*notepad*" [dict get $::npwin exe]]}
+} -result 1 -cleanup { np_close $::npwin }
+
+test win-1.2 {our own process windows are excluded} -constraints hasext -body {
+    # the root is a real titled window now; make it definitely enumerable were it
+    # not pid-excluded, then assert no enumerated hwnd belongs to THIS process
+    wm deiconify . ; update
+    set mypid [pid]
+    set mine 0
+    foreach w [annplat::windows] {
+        set h [dict get $w hwnd]
+        catch {
+            if {[twapi::get_window_process [list $h HWND]] == $mypid} { incr mine }
+        }
+    }
+    # fallback check without twapi: our toplevel's id must not be listed
+    set myid [expr {[winfo id .]}]
+    foreach w [annplat::windows] { if {[dict get $w hwnd] == $myid} { incr mine } }
+    set mine
+} -result 0
+
+# ---- activate + close + stale revalidation (§7.3) ------------------------------
+test win-2.1 {activate a live window returns 1} -constraints hasext -setup {
+    set ::npwin [np_spawn]
+} -body {
+    annplat::activate [dict get $::npwin hwnd]
+} -result 1 -cleanup { np_close $::npwin }
+
+test win-2.2 {close_window closes; the hwnd then reports stale} -constraints hasext -setup {
+    set ::npwin [np_spawn]
+} -body {
+    set h [dict get $::npwin hwnd]
+    set r1 [annplat::close_window $h]
+    set t0 [clock milliseconds] ; set gone 0
+    while {!$gone && [clock milliseconds] - $t0 < 5000} {
+        after 100
+        set gone 1
+        foreach w [annplat::windows] { if {[dict get $w hwnd] == $h} { set gone 0 } }
+    }
+    set r2 [annplat::activate $h]      ;# stale now -> 0, silent drop contract
+    list $r1 $gone $r2
+} -result {1 1 0} -cleanup { np_close $::npwin }
+
+test win-2.3 {activate/close on a never-valid hwnd returns 0, no error} -constraints hasext -body {
+    list [annplat::activate 99999999] [annplat::close_window 99999999]
+} -result {0 0}
+
+# ---- window candidates merge into search (M5) -----------------------------------
+test win-3.1 {a window matching the query appears in the window bucket} -constraints hasext -setup {
+    set ::npwin [np_spawn]
+    set ::ann::win_cache_ts 0
+} -body {
+    set cands [ann::window_candidates "notepad"]
+    set hit 0
+    foreach c $cands {
+        if {[dict get $c kind] eq "window" && [string match -nocase "*notepad*" [dict get $c target]]} { set hit 1 }
+    }
+    set hit
+} -result 1 -cleanup { np_close $::npwin ; set ::ann::win_cache_ts 0 }
+
+# ---- system commands (§8) -------------------------------------------------------
+test sys-1.1 {all seven system commands dispatch in dryrun} -constraints hasext -body {
+    set out {}
+    foreach id {lock sleep shutdown restart emptybin settings control} {
+        lappend out [annplat::syscmd $id -dryrun]
+    }
+    set out
+} -result {dryrun-ok dryrun-ok dryrun-ok dryrun-ok dryrun-ok dryrun-ok dryrun-ok}
+test sys-1.2 {SE_SHUTDOWN_NAME privilege path works (dryrun shutdown succeeds)} -constraints hasext -body {
+    annplat::syscmd syscmd:shutdown -dryrun
+} -result dryrun-ok
+test sys-1.3 {an unknown command errors cleanly} -constraints hasext -body {
+    catch {annplat::syscmd nosuchcmd -dryrun} e ; set e
+} -match glob -result {unknown system command*}
+
+# ---- the action panel (M6, §9.5) ------------------------------------------------
+proc mk {kind {path P} {target T}} {
+    dict create id 1 name N path $path kind $kind launch path target $target score 1
+}
+test panel-1.1 {actions are kind-contextual} -body {
+    set la [lmap a [ann::actions_for [mk shortcut]] { dict get $a label }]
+    set lw [lmap a [ann::actions_for [mk window]]   { dict get $a label }]
+    set lf [lmap a [ann::actions_for [mk file]]     { dict get $a label }]
+    list [expr {"Run as administrator" in $la}] \
+         [expr {"Close window" in $lw}] \
+         [expr {"Open containing folder" in $lf}] \
+         [expr {"Run as administrator" in $lf}]
+} -result {1 1 1 0}
+test panel-1.2 {Quit ann is in every panel (the §9.6 liveness affordance)} -body {
+    set ok 1
+    foreach k {shortcut uwp file folder window system_cmd} {
+        if {"Quit ann" ni [lmap a [ann::actions_for [mk $k]] { dict get $a label }]} { set ok 0 }
+    }
+    set ok
+} -result 1
+test panel-1.3 {destructive syscmd is confirm-gated; lock is not} -body {
+    set sd [lindex [ann::actions_for [mk system_cmd syscmd:shutdown]] 0]
+    set lk [lindex [ann::actions_for [mk system_cmd syscmd:lock]] 0]
+    list [dict get $sd destructive] [dict get $lk destructive]
+} -result {1 0}
+
+test panel-2.1 {panel state machine: open, navigate, inline confirm arming} -body {
+    ann::build
+    wm deiconify .
+    set ::ann::results [list [mk system_cmd syscmd:shutdown]]
+    set ::ann::sel 0
+    ann::render_results
+    ann::key_nav tab                      ;# open the panel
+    set opened $::ann::panel_open
+    set armed0 $::ann::panel_confirm
+    ann::key_nav enter                    ;# first Enter on destructive: ARMS
+    set armed1 $::ann::panel_confirm
+    ann::key_nav escape                   ;# Esc closes (and disarms)
+    set closed [expr {!$::ann::panel_open}]
+    list $opened $armed0 $armed1 $closed
+} -result {1 -1 0 1} -cleanup { set ::ann::results {} ; ann::panel_close ; ann::render_results }
+
+test panel-2.2 {moving the panel selection disarms a pending confirm} -body {
+    set ::ann::results [list [mk system_cmd syscmd:shutdown]]
+    set ::ann::sel 0
+    ann::render_results
+    ann::key_nav tab
+    ann::key_nav enter                    ;# arm
+    ann::key_nav down                     ;# move -> disarm
+    set out [list $::ann::panel_confirm $::ann::panel_open]
+    ann::key_nav escape
+    set out
+} -result {-1 1} -cleanup { set ::ann::results {} ; ann::panel_close ; ann::render_results }
+
+test panel-2.3 {copy path action puts the path on the clipboard} -body {
+    set r [mk file {C:\some where\thing.txt}]
+    set act ""
+    foreach a [ann::actions_for $r] {
+        if {[dict get $a label] eq "Copy path"} { set act [dict get $a script] }
+    }
+    uplevel #0 $act
+    clipboard get
+} -result {C:\some where\thing.txt}
+
+# ---- stale-window invoke drops silently (§7.3) ----------------------------------
+test panel-3.1 {invoking a stale window result re-queries instead of erroring} -constraints hasext -body {
+    set r [dict create id win:99999999 name Dead path 99999999 kind window launch window target x.exe score 1]
+    ann::invoke_result $r            ;# must not throw; silently re-enumerates
+    expr {[llength $::ann_test_bgerrors] == 0}
+} -result 1
