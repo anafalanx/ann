@@ -63,13 +63,15 @@ test db-1.6 {app_meta get/set} -constraints hasext -setup {
     anndb::meta $::db last_full_scan_ts
 } -result 1718000000 -cleanup { anndb::close $::db ; dbclean }
 
-test db-1.7 {empty query returns top rows} -constraints hasext -setup {
+test db-1.7 {empty query = launch history: unused rows are hidden} -constraints hasext -setup {
     dbclean ; set ::db [anndb::open [dbfile]] ; anndb::schema $::db
     anndb::upsert $::db a {Alpha} shortcut path {} {} 0
     anndb::upsert $::db b {Beta} shortcut path {} {} 0
+    set idb [dict get [anndb::get $::db b] id]
+    anndb::exec $::db "INSERT INTO frecency(catalog_id,decayed_score,last_event_ts) VALUES($idb,2.0,[clock seconds])"
 } -body {
-    llength [anndb::search $::db "" 10]
-} -result 2 -cleanup { anndb::close $::db ; dbclean }
+    lmap r [anndb::search $::db "" 10] { dict get $r name }
+} -result Beta -cleanup { anndb::close $::db ; dbclean }
 
 test db-1.8 {concurrent reader sees a committed write (WAL, no block)} -constraints hasext -setup {
     dbclean ; set ::w [anndb::open [dbfile]] ; anndb::schema $::w
@@ -80,3 +82,24 @@ test db-1.8 {concurrent reader sees a committed write (WAL, no block)} -constrai
     anndb::close $::r
     set n
 } -result 1 -cleanup { anndb::close $::w ; dbclean }
+
+# ---- empty query = LAUNCH HISTORY (owner decision) ----------------------------
+test hist-1.1 {empty query returns ONLY rows with usage, frecency-ranked} -constraints hasext -setup {
+    set ::hdb [file join $::ANN_TMP hist[pid].db]
+    foreach s {{} -wal -shm} { catch {file delete -force $::hdb$s} }
+    set ::c [anndb::open $::hdb] ; anndb::schema $::c
+    anndb::upsert $::c used1 {Used App} shortcut path {} {} 0
+    anndb::upsert $::c used2 {Used File} file path {} {} 0
+    anndb::upsert $::c never {Never Started} shortcut path {} {} 0
+    set id1 [dict get [anndb::get $::c used1] id]
+    set id2 [dict get [anndb::get $::c used2] id]
+    set now [clock seconds]
+    anndb::exec $::c "INSERT INTO frecency(catalog_id,decayed_score,last_event_ts) VALUES($id1,9.0,$now)"
+    anndb::exec $::c "INSERT INTO frecency(catalog_id,decayed_score,last_event_ts) VALUES($id2,3.0,$now)"
+} -body {
+    set names [lmap r [anndb::search $::c "" 50] { dict get $r name }]
+    list $names [expr {"Never Started" ni $names}]
+} -result {{{Used App} {Used File}} 1} -cleanup {
+    anndb::close $::c
+    foreach s {{} -wal -shm} { catch {file delete -force $::hdb$s} }
+}

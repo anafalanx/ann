@@ -113,7 +113,13 @@ test ix-2.4 {watcher: a created file appears via targeted update, a deleted one 
 test ix-1.6 {frecency write path: record_usage floats the app to the empty-query top} -constraints hasindex -setup { ixclean } -body {
     set ::ixd 0 ; proc ::onx {} { set ::ixd 1 }
     annindex::start [ixdb] ::onx
-    set t0 [clock milliseconds] ; while {!$::ixd && [clock milliseconds]-$t0 < 30000} { update ; after 50 }
+    # phase-START notifies (LED feed) arrive before any rows exist: wait for
+    # the catalog to actually carry the apps, not merely for a first notify
+    set t0 [clock milliseconds]
+    while {[clock milliseconds]-$t0 < 30000} {
+        update ; after 50
+        if {$::ixd && ![catch {dict get [annindex::stats] lnk_found} lf] && $lf > 0} break
+    }
     set ::ixr [anndb::open [ixdb] -readonly]
     set hit [lindex [anndb::search $::ixr calc 1] 0]
     set id [dict get $hit id] ; set nm [dict get $hit name]
@@ -243,7 +249,7 @@ test tier-3.1 {tier-1 rows: trigram recall >=3 chars, prefix at 2, subsequence n
     foreach s {{} -wal -shm} { catch {file delete -force $::sdb$s} }
 }
 
-test tier-3.2 {equal rows: the tier-0 one outranks; empty query hides frecency-less tier-1} -constraints hasext -setup {
+test tier-3.2 {equal rows: the tier-0 one outranks; empty query = history only} -constraints hasext -setup {
     set ::sdb [file join $::ANN_TMP tsearch2[pid].db]
     foreach s {{} -wal -shm} { catch {file delete -force $::sdb$s} }
     set ::c [anndb::open $::sdb] ; anndb::schema $::c
@@ -255,7 +261,7 @@ test tier-3.2 {equal rows: the tier-0 one outranks; empty query hides frecency-l
     set empty [anndb::search $::c "" 9]
     list [dict get [lindex $r 0] path] [llength $r] \
          [lmap x $empty {dict get $x path}]
-} -result {fast 2 fast} -cleanup {
+} -result {fast 2 {}} -cleanup {
     anndb::close $::c
     foreach s {{} -wal -shm} { catch {file delete -force $::sdb$s} }
 }

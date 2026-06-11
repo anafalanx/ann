@@ -729,6 +729,100 @@ proc ann::build {} {
 # by a hairline, with a left message cell (transient status / key hints) and a
 # right info cell (result count). Width-safe: the left cell uses the -width 1 +
 # fill trick so a long message clips instead of widening the fixed popup.
+# ---- tooltips (els's machinery, ported verbatim: els.tcl find-bar polish) ----
+proc ann::tooltip {w text} {
+    bind $w <Enter>      [list ann::tip_schedule $w $text]
+    bind $w <Leave>      ann::tip_cancel
+    # per-button (not generic <ButtonPress>) + APPEND: a widget's own specific
+    # <Button-1> binding shadows a generic one, so a click never dismissed the
+    # tip; appending composes with existing handlers
+    bind $w <ButtonPress-1> {+ann::tip_cancel}
+    bind $w <ButtonPress-2> {+ann::tip_cancel}
+    bind $w <ButtonPress-3> {+ann::tip_cancel}
+    # the anchor dying must take its pending timer AND a visible tip with it
+    bind $w <Destroy> {+ann::tip_cancel}
+}
+# dynamic tooltip: textcmd is evaluated when the tip is about to show, so it
+# tracks live state; an empty result suppresses the tip
+proc ann::tooltip_for {w textcmd {delay 550}} {
+    bind $w <Enter>       [list ann::tip_schedule_cmd $w $textcmd $delay]
+    bind $w <Leave>       ann::tip_cancel
+    bind $w <ButtonPress-1> {+ann::tip_cancel}
+    bind $w <ButtonPress-2> {+ann::tip_cancel}
+    bind $w <ButtonPress-3> {+ann::tip_cancel}
+    bind $w <Destroy> {+ann::tip_cancel}
+}
+proc ann::tip_schedule {w text} {
+    ann::tip_cancel
+    set ::ann::tip_after [after 550 [list ann::tip_pop $w $text]]
+}
+proc ann::tip_schedule_cmd {w textcmd {delay 550}} {
+    ann::tip_cancel
+    set ::ann::tip_after [after $delay [list ann::tip_pop_cmd $w $textcmd]]
+}
+proc ann::tip_cancel {} {
+    if {[info exists ::ann::tip_after]} { after cancel $::ann::tip_after ; unset ::ann::tip_after }
+    catch {destroy .tip}
+}
+# wrap long tip text so it can't run off the screen (els::tip_wrap: breaks after
+# a separator once a line reaches ~target, hard break past target+cap)
+proc ann::tip_wrap {s {target 72} {cap 24}} {
+    if {[string length $s] <= $target} { return $s }
+    set out {}
+    foreach para [split $s \n] {
+        if {[string length $para] <= $target} { lappend out $para ; continue }
+        set line ""
+        foreach ch [split $para ""] {
+            append line $ch
+            set n [string length $line]
+            if {($n >= $target && [string first $ch "/\\ -_"] >= 0) || $n >= $target + $cap} {
+                lappend out $line ; set line ""
+            }
+        }
+        if {$line ne ""} { lappend out $line }
+    }
+    return [join $out \n]
+}
+proc ann::tip_pop {w text} {
+    catch {destroy .tip}
+    if {![winfo exists $w] || $text eq ""} { return }
+    toplevel .tip -bd 0
+    wm overrideredirect .tip 1
+    catch {wm attributes .tip -topmost 1}
+    label .tip.l -text [ann::tip_wrap $text] -justify left \
+        -bg "#2B2B2B" -fg "#F0F0F0" -font annStatus -padx 6 -pady 2
+    pack .tip.l
+    update idletasks
+    set tw [winfo reqwidth .tip] ; set th [winfo reqheight .tip]
+    set x [expr {[winfo rootx $w] + [winfo width $w] / 2 - $tw / 2}]
+    set below [expr {[winfo rooty $w] + [winfo height $w] + 5}]
+    # prefer below; flip above when needed; clamp into the widget's own toplevel
+    set top [winfo toplevel $w]
+    set margin 4
+    set winl [winfo rootx $top]
+    set wint [winfo rooty $top]
+    set winr [expr {$winl + [winfo width $top]}]
+    set winb [expr {$wint + [winfo height $top]}]
+    set above [expr {[winfo rooty $w] - $th - 5}]
+    if {$below + $th <= $winb - $margin} {
+        set y $below
+    } elseif {$above >= $wint + $margin} {
+        set y $above
+    } else {
+        set y [expr {min(max($below, $wint + $margin), $winb - $th - $margin)}]
+    }
+    if {$x < $winl + $margin} {
+        set x [expr {$winl + $margin}]
+    } elseif {$x + $tw > $winr - $margin} {
+        set x [expr {max($winl + $margin, $winr - $margin - $tw)}]
+    }
+    wm geometry .tip +$x+$y
+}
+proc ann::tip_pop_cmd {w textcmd} {
+    if {![winfo exists $w]} { return }
+    ann::tip_pop $w [uplevel #0 $textcmd]
+}
+
 proc ann::build_statusbar {} {
     variable C
     frame .status -bg $C(bg)
@@ -736,9 +830,15 @@ proc ann::build_statusbar {} {
     pack .status.sep -side top -fill x
     frame .status.in -bg $C(bg) -padx 12 -pady 4
     pack .status.in -fill x
+    # the catalog LED (flat, sober): green4 idle · els-red priority scan ·
+    # dark-yellow background walk — hover for words
+    label .status.in.led -bg $C(bg) -fg $C(accent) -font annStatus -text "●"
+    pack .status.in.led -side left -padx {0 7}
+    ann::tooltip_for .status.in.led ann::led_tip
     label .status.in.info -bg $C(bg) -fg $C(muted) -anchor e -font annStatus -text ""
     pack .status.in.info -side right -padx {10 0}
-    # a normally-empty notice; lights up red when a newer release is detected
+    ann::tooltip_for .status.in.info {expr {"[llength $::ann::results] results shown (ann keeps the first $::ann::result_max matches; the viewport scrolls)"}}
+    # a normally-empty notice; lights up when a newer release is detected
     # (els's .sb.update, verbatim mechanism) — click opens the download page
     label .status.in.update -bg $C(bg) -fg $C(accentText) -anchor e -font annStatus \
         -text "" -cursor hand2
@@ -747,6 +847,34 @@ proc ann::build_statusbar {} {
         {ann::open_url "https://github.com/anafalanx/ann/releases/latest"}
     label .status.in.msg -bg $C(bg) -fg $C(muted) -anchor w -font annStatus -text "" -width 1
     pack .status.in.msg -side left -fill x -expand 1
+    ann::tooltip_for .status.in.msg ann::status_tip
+}
+
+# the LED state from the live indexer phase (0 idle, 1 priority, 2 background)
+proc ann::led_phase {} {
+    if {[dict size $::ann::last_stats] && [dict exists $::ann::last_stats phase]} {
+        return [dict get $::ann::last_stats phase]
+    }
+    return [expr {$::ann::indexing ? 1 : 0}]
+}
+proc ann::led_update {} {
+    variable C
+    if {![winfo exists .status.in.led]} return
+    # 1 = priority scan: els red · 2 = background walk: sober yellow ·
+    # idle: ann green. (NO inline comments in the pattern list: Tcl parses
+    # them as patterns — they pair up silently and break `default`.)
+    switch -- [ann::led_phase] {
+        1       { .status.in.led configure -fg "#DC322F" }
+        2       { .status.in.led configure -fg "#B8860B" }
+        default { .status.in.led configure -fg $C(accent) }
+    }
+}
+proc ann::led_tip {} {
+    switch -- [ann::led_phase] {
+        1       { return "catalog: PRIORITY scan running — the fast folders are being indexed right now" }
+        2       { return "catalog: BACKGROUND walk running — the slow-tier folders, throttled so the machine stays quiet" }
+        default { return "catalog: idle — nothing is being indexed" }
+    }
 }
 
 # ---- update check (els's mechanism, verbatim) --------------------------------
@@ -833,18 +961,38 @@ proc ann::ncomma {n} {
 }
 
 # The steady left-cell text: INDEXING ACTIVITY, not usage hints (user decision).
+# The steady left-cell line: ABBREVIATED catalog facts (A apps · F files ·
+# HH:MM ⌚ last update, plus terse flags); the full sentences live in the
+# tooltip (ann::status_tip) — hover the line or the LED.
 proc ann::status_idle_text {} {
     variable last_stats ; variable last_scan_at ; variable indexing
-    if {![dict size $last_stats]} { return [expr {$indexing ? "indexing…" : ""}] }
+    if {![dict size $last_stats]} { return [expr {$indexing ? "scanning…" : ""}] }
     set apps  [expr {[dict get $last_stats lnk_found] + [dict get $last_stats uwp_found]}]
-    set txt "[ann::ncomma $apps] apps · [ann::ncomma [dict get $last_stats files_found]] files"
-    if {![dict get $last_stats bulk_done] && ![dict get $last_stats bulk_aborted]} {
-        append txt " · indexing in background…"
-    } else {
-        if {$last_scan_at ne ""} { append txt " · updated $last_scan_at" }
-        if {[dict get $last_stats capped_bulk]} { append txt " · file cap reached" }
+    set txt "A [ann::ncomma $apps] · F [ann::ncomma [dict get $last_stats files_found]]"
+    if {$last_scan_at ne ""} { append txt " · $last_scan_at" }
+    if {[dict get $last_stats capped_prio] || [dict get $last_stats capped_bulk]} {
+        append txt " · cap"
     }
+    if {[dict get $last_stats errors]} { append txt " · E[dict get $last_stats errors]" }
     return $txt
+}
+
+# the verbose companion (the statusbar line's tooltip)
+proc ann::status_tip {} {
+    variable last_stats ; variable last_scan_at
+    if {![dict size $last_stats]} { return "the catalog has not been built yet" }
+    dict with last_stats {}
+    set out "catalog: [ann::ncomma [expr {$lnk_found + $uwp_found}]] apps ([ann::ncomma $lnk_found] Start-Menu, [ann::ncomma $uwp_found] Store) · [ann::ncomma $files_found] files & folders ([ann::ncomma $files_prio] in priority folders, [ann::ncomma $files_bulk] background)"
+    if {$last_scan_at ne ""} { append out "\nlast update $last_scan_at" }
+    switch -- [ann::led_phase] {
+        1 { append out " — priority scan running now" }
+        2 { append out " — background walk running now (throttled)" }
+    }
+    if {$capped_prio} { append out "\npriority cap reached: a fast folder has more entries than its slice" }
+    if {$capped_bulk} { append out "\nfile cap reached ([ann::ncomma $files_bulk] background rows) — narrow the scan folders if results look incomplete" }
+    if {$bulk_aborted} { append out "\nthe last background walk yielded to newer work; it resumes automatically" }
+    if {$errors} { append out "\n$errors error(s) during the last scan — see ann.log" }
+    return $out
 }
 
 # Load the real ann icon (multiple sizes) into the titlebar + taskbar. Best-effort
@@ -973,7 +1121,8 @@ proc ann::render_results {} {
     if {$n == 0} {
         set q [expr {[winfo exists .c.q] ? [.c.q get] : ""}]
         .c.list.empty configure -text [expr {$indexing ? "  indexing…" :
-            [expr {$q ne "" ? "  No results" : "  (catalog empty)"}]}]
+            [expr {$q ne "" ? "  No results"
+                 : "  Nothing launched yet — what you start with ann appears here"}]}]
         pack .c.list.empty -fill x -pady 8
         for {set i 0} {$i < $result_limit} {incr i} { pack forget .c.list.row$i }
     } else {
@@ -1933,12 +2082,15 @@ proc ann::key_nav {action} {
 # refresh is skipped (the next keystroke re-queries anyway), and the selection
 # is re-anchored to the same result id, not reset to 0.
 proc ann::on_catalog_updated {} {
-    set ::ann::indexing 0
     if {[ann::has annindex::stats] && ![catch {annindex::stats} st]} {
         ann::log INFO "catalog updated: $st"
         # feed the statusbar's indexing-activity line (its idle text)
         set ::ann::last_stats $st
         set ::ann::last_scan_at [clock format [clock seconds] -format %H:%M]
+        # the empty-list "indexing…" hint tracks the LIVE phase (a phase-start
+        # notify precedes any rows; results are incomplete until phase 1 ends)
+        set ::ann::indexing [expr {[ann::led_phase] == 1}]
+        ann::led_update
         if {$::ann::status_after eq ""} { ann::status "" }   ;# refresh unless a transient is up
         if {[dict exists $st capped_bulk] && [dict get $st capped_bulk] && [dict get $st bulk_done]} {
             ann::log WARN "file index cap reached ([dict get $st files_bulk] bulk rows) — narrow watched_roots if results look incomplete"

@@ -362,10 +362,13 @@ static int Db_Search(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[]) 
     sqlite3_stmt *stmts[2] = { NULL, NULL };
     int nst = 0, rc = SQLITE_OK;
     if (nlen == 0) {
+        /* EMPTY QUERY = LAUNCH HISTORY (owner decision): only rows the user has
+         * actually started/opened through ann (frecency anchors), re-decayed at
+         * query time and bucketed by nature in Tcl. Never "some random stuff". */
         rc = sqlite3_prepare_v2(db,
             ANN_SEL_COLS
-            " FROM catalog c LEFT JOIN frecency f ON f.catalog_id=c.id"
-            " WHERE c.enabled=1 AND (c.tier=0 OR f.decayed_score>0) LIMIT ?1",
+            " FROM catalog c JOIN frecency f ON f.catalog_id=c.id"
+            " WHERE c.enabled=1 AND f.decayed_score>0 LIMIT ?1",
             -1, &stmts[0], NULL);
         if (rc == SQLITE_OK) { sqlite3_bind_int(stmts[0], 1, ANN_CAND_CAP); nst = 1; }
     } else {

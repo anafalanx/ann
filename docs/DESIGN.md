@@ -441,7 +441,10 @@ $$\text{final} = w_{fuzzy}\cdot \text{fuzzyScore} \;+\; w_{frec}\cdot \text{norm
 ### 6.5 Stage 5 — fixed source-priority ordering (a locked decision)
 
 > **Amendment (v0.4+, by owner decision — supersedes the three buckets below):**
-> the buckets are now **by NATURE, not by source**:
+> the EMPTY query is the LAUNCH HISTORY: only items actually started/opened
+> through ann (frecency anchors), re-decayed and bucketed like everything else
+> — never arbitrary catalog rows; first-run shows a friendly hint instead. And
+> the buckets are **by NATURE, not by source**:
 > **1. commands** (system commands + any future ann commands) ·
 > **2. executable stuff** (apps, UWP, shortcuts, running windows, provider
 > results, and plain files with executable extensions: exe com bat cmd msi msc
@@ -721,11 +724,17 @@ One fixed, polished look. No themes, no skins, no layout options.
 > scrolling re-points them) with a **vertical scrollbar cloned from els** (clam
 > default layout, 12p arrows, els's greys, auto-hidden while everything fits;
 > wheel = 3 rows per notch, keyboard selection drags the window along); there
-> is a **real docked status bar** (els-style: hairline rule; left cell =
-> transient message / **indexing activity** ("97 apps · 17,366 files · indexing
-> in background… / updated HH:MM / file cap reached") — never usage hints;
-> right cell = result count); and the mouse is supported on results: **click
-> selects, double-click launches** (keyboard remains the primary path).
+> is a **real docked status bar** (els-style: hairline rule) carrying: a flat
+> tri-state **catalog LED** leftmost (green4 idle · els-red while the priority
+> scan runs · sober dark-yellow `#B8860B` while the throttled background walk
+> runs — fed by the indexer's live `phase` field in its stats), then the left
+> cell = transient message / **abbreviated catalog facts** ("A 97 · F 17,366 ·
+> 15:07 · cap · E2") whose full sentences live in **tooltips** (els's tip
+> machinery ported verbatim: 550 ms delay, dark tip, wrapping, window-clamped)
+> on the LED, the line, and the result count; right cell = result count —
+> never usage hints; and the mouse is supported on results: **click selects,
+> double-click launches, right-click opens the context menu** (keyboard stays
+> primary).
 
 - **Borderless popup:** `wm overrideredirect 1` (undecorated, window-manager-ignored) + `wm attributes -topmost 1` (always above).
 - **Centered on the active monitor** — the monitor with focus/the cursor. We compute the active monitor in C (`MonitorFromPoint`/`MonitorFromWindow` on the foreground window), then position via `wm geometry`. (`winfo screenwidth/height` alone is multi-monitor-naive, so the C layer supplies the correct monitor rect.)

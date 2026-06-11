@@ -76,6 +76,7 @@ typedef struct {
     int capped_prio, capped_bulk;  /* 1 = budget exhausted (logged, never silent) */
     int bulk_done, bulk_aborted;   /* bulk walk completed / yielded to new work */
     int bulk_ms;                   /* wall time of the bulk phase */
+    int phase;                     /* live: 0 idle, 1 priority scan, 2 background walk */
 } Stats;
 
 /* Tier-1 deny list: directory NAMES never entered nor indexed during the bulk
@@ -784,6 +785,7 @@ static Tcl_Obj *stats_dict(Tcl_Interp *ip, const Stats *st) {
     Tcl_DictObjPut(ip, d, Tcl_NewStringObj("bulk_aborted", -1), Tcl_NewIntObj(st->bulk_aborted));
     Tcl_DictObjPut(ip, d, Tcl_NewStringObj("bulk_ms", -1),      Tcl_NewIntObj(st->bulk_ms));
     Tcl_DictObjPut(ip, d, Tcl_NewStringObj("errors", -1),       Tcl_NewIntObj(st->errors));
+    Tcl_DictObjPut(ip, d, Tcl_NewStringObj("phase", -1),        Tcl_NewIntObj(st->phase));
     return d;
 }
 
@@ -952,17 +954,25 @@ static void thread_full_scan(Writer *w, Stats *st) {
     for (int i = 0; i < nroots; i++) {
         if (pr[i]) fast[nfast++] = roots[i]; else slow[nslow++] = roots[i];
     }
+    /* phase is LIVE state for the GUI's LED: 1 while the priority scan runs,
+     * 2 while the background walk runs, 0 idle — published at each boundary */
+    st->phase = 1;
+    scan_publish(st);
     do_scan_fast(w, st, fast, nfast);
-    scan_publish(st);                       /* the popup is useful right now */
     int force = (InterlockedExchange(&gBulkForce, 0) != 0);
     sqlite3_int64 cd;
     EnterCriticalSection(&gLock); cd = gBulkCooldownS; LeaveCriticalSection(&gLock);
-    if (!stop_requested() && (force || (sqlite3_int64) time(NULL) - gLastBulkTs >= cd)) {
+    int willBulk = (!stop_requested()
+                    && (force || (sqlite3_int64) time(NULL) - gLastBulkTs >= cd));
+    st->phase = willBulk ? 2 : 0;
+    scan_publish(st);                       /* the popup is useful right now */
+    if (willBulk) {
         do_scan_bulk(w, st, slow, nslow, fast, nfast, 1);
         /* stamp ATTEMPTS, not just completions: an event storm that aborts the
          * walk must not thrash full re-walks back to back; the timed resume in
          * the thread loop finishes an aborted walk after the cooldown */
         gLastBulkTs = (sqlite3_int64) time(NULL);
+        st->phase = 0;
         scan_publish(st);
     }
     for (int i = 0; i < nroots; i++) Tcl_Free(roots[i]);

@@ -188,13 +188,13 @@ test scroll-1.4 {the bar hides when everything fits (els autohide)} -body {
 } -result 0 -cleanup { set ::ann::results {} ; ann::render_results }
 
 test stat-2.1 {the idle statusbar line reports indexing activity, never key hints} -body {
-    set ::ann::last_stats {lnk_found 60 uwp_found 30 files_found 1234 bulk_done 0 bulk_aborted 0 capped_bulk 0}
+    set ::ann::last_stats {lnk_found 60 uwp_found 30 files_found 1234 bulk_done 0 bulk_aborted 0 capped_prio 0 capped_bulk 0 errors 0 phase 0}
     set ::ann::last_scan_at "10:00"
     set t1 [ann::status_idle_text]
     dict set ::ann::last_stats bulk_done 1
     set t2 [ann::status_idle_text]
     list $t1 $t2
-} -result [list "90 apps · 1,234 files · indexing in background…" "90 apps · 1,234 files · updated 10:00"] -cleanup {
+} -result [list "A 90 · F 1,234 · 10:00" "A 90 · F 1,234 · 10:00"] -cleanup {
     set ::ann::last_stats {} ; set ::ann::last_scan_at ""
 }
 
@@ -232,3 +232,39 @@ test scroll-2.1 {the window width is IDENTICAL with and without the scrollbar} -
     set wWithout [winfo width .]
     list [expr {$wWith == $wWithout}] [winfo ismapped .c.vs]
 } -result {1 0} -cleanup { set ::ann::results {} ; ann::render_results }
+
+# ---- the catalog LED + abbreviated status + tooltips ---------------------------
+test led-1.1 {LED color follows the indexer phase} -body {
+    ann::build
+    set out {}
+    foreach {ph want} [list 1 "#DC322F" 2 "#B8860B" 0 $::ann::C(accent)] {
+        set ::ann::last_stats [dict create phase $ph lnk_found 1 uwp_found 1 \
+            files_found 1 files_prio 1 files_bulk 0 capped_prio 0 capped_bulk 0 \
+            bulk_done 1 bulk_aborted 0 errors 0]
+        ann::led_update
+        lappend out [expr {[.status.in.led cget -fg] eq $want}]
+    }
+    set out
+} -result {1 1 1} -cleanup { set ::ann::last_stats {} ; ann::led_update }
+
+test led-1.2 {abbreviated line + verbose tooltip carry the same facts} -body {
+    set ::ann::last_stats [dict create phase 0 lnk_found 60 uwp_found 37 \
+        files_found 17366 files_prio 17000 files_bulk 366 capped_prio 1 \
+        capped_bulk 0 bulk_done 1 bulk_aborted 0 errors 2]
+    set ::ann::last_scan_at "15:07"
+    set a [ann::status_idle_text]
+    set t [ann::status_tip]
+    list $a [string match "*97 apps*" $t] [string match "*priority cap*" $t] \
+         [string match "*2 error*" $t]
+} -result {{A 97 · F 17,366 · 15:07 · cap · E2} 1 1 1} -cleanup {
+    set ::ann::last_stats {} ; set ::ann::last_scan_at ""
+}
+
+test tip-1.1 {tooltip machinery: wrap, pop, cancel (els port)} -body {
+    set w [ann::tip_wrap [string repeat "a/" 60] 40 10]
+    set lines [llength [split $w \n]]
+    ann::tip_pop .status.in.led "hello tip"
+    set up [winfo exists .tip]
+    ann::tip_cancel
+    list [expr {$lines > 1}] $up [winfo exists .tip]
+} -result {1 1 0}
