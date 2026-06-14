@@ -6,24 +6,27 @@ that statically embeds **Tcl/Tk 9.0.3** (GUI + programmable config) and **SQLite
 [`docs/DESIGN.md`](docs/DESIGN.md) — treat it as authoritative for *what* to build
 and *how each subsystem must behave*. This file covers *how to work in the repo*.
 
+`ann` lives **inside the mal folder** and builds against a shared, read-only
+toolchain **bundle** pinned by `toolchain.pin` (currently `tika26b`), discovered
+by walking ancestors to mal's `X/<pin>/` — see [`toolchain.md`](toolchain.md). It
+reads the bundle read-only and writes nothing outside its own folder.
+
 ## Read the Tcl/Tk 9 manual first
 
-This repo vendors the **complete Tcl 9 & Tk 9 manual** as Markdown under
-[`docs/tcl-tk-9-manual/`](docs/tcl-tk-9-manual/) (1293 pages: Tcl + Tk commands,
-the C API, and `tclsh`/`wish`). It is the **authoritative reference** for this
+The **complete Tcl 9 & Tk 9 manual** (Tcl + Tk commands, the C API, and
+`tclsh`/`wish`) ships as Markdown inside the pinned mal bundle — under the store's
+`X/<pin>/manual/`, where `<pin>` is the bundle named in `toolchain.pin` (`x env`
+prints the resolved bundle path). It is the **authoritative reference** for this
 codebase — prefer it over training-data recall, which may be stale or describe
 Tcl 8.x behavior.
 
 - **Before writing or changing any Tcl/Tk code — or the C that drives the
   embedded interpreter** (`Tcl_CreateObjCommand`, `Tcl_ThreadQueueEvent`,
   `Tk_PhotoPutBlock`, `TclZipfs_AppHook`, …) — **consult the manual.** Start at
-  [`docs/tcl-tk-9-manual/INDEX.md`](docs/tcl-tk-9-manual/INDEX.md) and read the
-  pages relevant to your change (each file is named after the command/function,
-  e.g. `commands/wm.md`, `commands/ttk_entry.md`, `c-api/Tcl_CreateThread.md`).
-- Do **not** read all 1293 pages into context — open the few that matter. Grep
-  the tree to find the right page.
-- The pages are generated from the vendored nroff by `tools/man2md.tcl`; to
-  refresh them, rerun `tclsh90 tools/man2md.tcl` (do not hand-edit the output).
+  the bundle's `manual/INDEX.md` and read the pages relevant to your change (each
+  file is named after the command/function, e.g. `commands/wm.md`,
+  `commands/ttk_entry.md`, `c-api/Tcl_CreateThread.md`).
+- Grep the tree to find the right page; open the few that matter.
 
 ## The build is native (custom C23 entry point)
 
@@ -35,14 +38,14 @@ Tcl/Tk script libraries and `ann.tcl` riding inside an appended zipfs image.
 composition and the fully-programmable config are Tcl; SQLite owns the catalog,
 the FTS5 prefilter, and frecency.
 
-- **`x build-sqlite`** compiles the vendored amalgamation into
-  `.toolchain/sqlite/libsqlite3.a` (FTS5 + math, one UCRT model). Run once; the
-  native build links it.
+- **`x build-sqlite`** compiles the bundle's SQLite amalgamation **sources** into
+  `build/libsqlite3.a` (FTS5 + math, one UCRT model) — a project build product.
+  Run once; the native build links it.
 - **`x build`** builds `ann.exe` (compile `src/ann_main.c` + the static
   extensions in `src/`; the PE icon/manifest/version `.rc`/`.manifest`/`.ico` are
   **generated from Tcl** by `tools/genres.tcl` + `tools/mkico.tcl` into the
-  gitignored `build/`, then `windres`'d; link the static `.toolchain/tcl9s` libs
-  + `libsqlite3.a` + the Win32 system libs; append the zipfs payload).
+  gitignored `build/`, then `windres`'d; link the bundle's static `tcl9s` libs
+  + `build/libsqlite3.a` + the Win32 system libs; append the zipfs payload).
 - The architecture, the static-link recipe, and the pitfalls are in
   [`docs/DESIGN.md`](docs/DESIGN.md) (§3 threading, §4 stack & static linking).
 - Verify the exe headlessly: `ann.exe --selftest [report.txt]` writes a report

@@ -59,10 +59,11 @@ threading model, and every locked decision: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Toolchain & tasks
 
-The project is **fully self-contained**: the vendored Tcl/Tk 9, the gcc/C23
-toolchain, the SQLite amalgamation, and twapi live under `.toolchain/`, so the
-folder is copy-paste portable to any Windows 11+ machine — no installs, and no
-links to anything outside the folder. One ignition script, `x.cmd`, puts the
+`ann` lives **inside the mal folder** and builds against a shared, read-only
+toolchain **bundle** (Tcl/Tk 9, the gcc/C23 toolchain, the SQLite amalgamation,
+twapi) pinned by `toolchain.pin` (currently `tika26b`) — discovered by walking
+ancestors to mal's `X/<pin>/`, so the whole tree relocates freely and ann writes
+nothing outside its own folder. One ignition script, `x.cmd`, puts the bundle's
 toolchain on PATH and hands off to the Tcl task runner:
 
 ```

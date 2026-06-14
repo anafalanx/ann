@@ -1,5 +1,5 @@
 # tests/run.tcl — run the whole ann test suite in one process.
-#   .toolchain/tcl9/bin/tclsh90.exe tests/run.tcl [--fast]
+#   x test [--fast]   (runs tests/run.tcl under the bundle's tclsh90.exe)
 # Exits non-zero if any test fails.
 
 set script [info script]

@@ -2058,10 +2058,14 @@ proc ann::settings_save {roots hotkey result_limit} {
     append body "ann::option result_limit [list $result_limit]\n"
     append body "ann::option watched_roots [list $roots]\n"
     append body "# <<< ann settings\n"
-    set fh [open $path w]
+    # Atomic save: write a sibling temp, then rename over the target (atomic on
+    # NTFS). A crash/kill mid-write loses only the temp, never the live config.
+    set tmp "$path.tmp"
+    set fh [open $tmp w]
     fconfigure $fh -encoding utf-8 -translation lf
     puts -nonewline $fh $body
     close $fh
+    file rename -force $tmp $path
 }
 
 # key router. While the (native) context menu is posted, ITS grab handles
@@ -2177,7 +2181,9 @@ proc ann::main {} {
         exit [expr {[ann::selftest_report $out] ? 0 : 1}]
     }
     # single-instance: if another copy in THIS folder is live, ask it to show + exit.
-    if {[ann::has annhotkey::acquire]} {
+    # Tooling (x shot, tests) sets ANN_NO_SINGLE_INSTANCE to launch a throwaway
+    # instance that coexists with a running one instead of bouncing to it.
+    if {[ann::has annhotkey::acquire] && ![info exists ::env(ANN_NO_SINGLE_INSTANCE)]} {
         if {![annhotkey::acquire [ann::instance_tag]]} {
             catch {annhotkey::signal [ann::instance_tag]}
             ann::log INFO "another instance is live; signaled it to show; exiting"

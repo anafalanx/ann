@@ -11,16 +11,33 @@
 # SQLite and the platform layer are compiled INTO ann.exe (no embedded DLLs), so
 # there is no --with-ext payload for the native build.  tk_library is extracted
 # from wish90s.exe's own appended archive (present regardless of the mkimg
-# wrapper) or the portable appfull payload; tcl_library from the static interp's
-# //zipfs:/app or appfull.
+# wrapper) or the bundle's tcllib payload; tcl_library from the static interp's
+# //zipfs:/app or the bundle's tcllib.
 
 proc script_root {} {
     set s [info script]
     if {[file pathtype $s] ne "absolute"} { set s [file join [pwd] $s] }
     return [file dirname [file dirname $s]]
 }
+# Discover the pinned bundle in mal's store (canonical copy in tools/x.tcl):
+# toolchain.pin names it; walk ancestors for X/<pin>/BUNDLE.manifest.
+proc discover_store {root} {
+    set pinfile [file join $root toolchain.pin]
+    if {![file exists $pinfile]} { error "no toolchain.pin in $root" }
+    set fh [open $pinfile r] ; set pin [string trim [read $fh]] ; close $fh
+    if {$pin eq ""} { error "toolchain.pin is empty in $root" }
+    set dir $root
+    for {set i 0} {$i < 8} {incr i} {
+        set cand [file join $dir X $pin]
+        if {[file exists [file join $cand BUNDLE.manifest]]} { return $cand }
+        set up [file dirname $dir]
+        if {$up eq $dir} break
+        set dir $up
+    }
+    error "bundle '$pin' not found in any ancestor X/ store from $root"
+}
 set ROOT [script_root]
-set TC   [file join $ROOT .toolchain]
+set TC   [discover_store $ROOT]
 proc TCp {args} { return [file join $::TC {*}$args] }
 proc copy_tree {src dst} {
     file mkdir $dst
@@ -60,20 +77,20 @@ if {![file exists $wish]} { error "static wish missing: $wish" }
 set mkimgWrapper [expr {$wrapperOverride ne "" ? $wrapperOverride : $wish}]
 if {[file isdirectory //zipfs:/app/tcl_library]} {
     set tclLibrary //zipfs:/app/tcl_library
-} elseif {[file isdirectory [TCp appfull tcl_library]]} {
-    set tclLibrary [TCp appfull tcl_library]
+} elseif {[file isdirectory [TCp tcllib tcl_library]]} {
+    set tclLibrary [TCp tcllib tcl_library]
 } else {
-    error "tcl_library not found in //zipfs:/app or .toolchain/appfull"
+    error "tcl_library not found in //zipfs:/app or the bundle's tcllib"
 }
 
-set stage [file join $TC _pkg_stage]
+set stage [file join $ROOT build _pkg_stage]
 file delete -force $stage
 file mkdir $stage
 
-# 1. tcl_library — from the static interp's //zipfs:/app when mounted, else appfull.
+# 1. tcl_library — from the static interp's //zipfs:/app when mounted, else the bundle's tcllib.
 copy_tree $tclLibrary [file join $stage tcl_library]
 
-# 2. tk_library — from the wish90s wrapper's appended archive, else appfull.
+# 2. tk_library — from the wish90s wrapper's appended archive, else the bundle's tcllib.
 set copiedTk 0
 if {![catch {zipfs mount $wish Wt}]} {
     if {[file isdirectory //zipfs:/Wt/tk_library]} {
@@ -82,11 +99,11 @@ if {![catch {zipfs mount $wish Wt}]} {
     }
     zipfs unmount Wt
 }
-if {!$copiedTk && [file isdirectory [TCp appfull tk_library]]} {
-    copy_tree [TCp appfull tk_library] [file join $stage tk_library]
+if {!$copiedTk && [file isdirectory [TCp tcllib tk_library]]} {
+    copy_tree [TCp tcllib tk_library] [file join $stage tk_library]
     set copiedTk 1
 }
-if {!$copiedTk} { error "tk_library not found in wish90s.exe or .toolchain/appfull" }
+if {!$copiedTk} { error "tk_library not found in wish90s.exe or the bundle's tcllib" }
 
 # 3. app: main.tcl (= ann.tcl) + resources/
 file copy -force [file join $ROOT ann.tcl] [file join $stage main.tcl]

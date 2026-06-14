@@ -21,13 +21,27 @@ proc script_root {} {
     if {[file pathtype $s] ne "absolute"} { set s [file join [pwd] $s] }
     return [file dirname [file dirname $s]]
 }
-set ::SHOT_ROOT [script_root]
-lappend auto_path [file join $::SHOT_ROOT .toolchain twapi-dl]
-
-proc ::shot_tmpdir {} {
-    if {[info exists ::env(TEMP)] && $::env(TEMP) ne ""} { return $::env(TEMP) }
-    return $::SHOT_ROOT
+# Discover the pinned bundle (canonical copy in tools/x.tcl) for twapi's package.
+proc discover_store {root} {
+    set pinfile [file join $root toolchain.pin]
+    if {![file exists $pinfile]} { error "no toolchain.pin in $root" }
+    set fh [open $pinfile r] ; set pin [string trim [read $fh]] ; close $fh
+    if {$pin eq ""} { error "toolchain.pin is empty in $root" }
+    set dir $root
+    for {set i 0} {$i < 8} {incr i} {
+        set cand [file join $dir X $pin]
+        if {[file exists [file join $cand BUNDLE.manifest]]} { return $cand }
+        set up [file dirname $dir]
+        if {$up eq $dir} break
+        set dir $up
+    }
+    error "bundle '$pin' not found in any ancestor X/ store from $root"
 }
+set ::SHOT_ROOT [script_root]
+catch { lappend auto_path [file join [discover_store $::SHOT_ROOT] twapi-dl] }
+
+# Temp work stays INSIDE the project (build/), never %TEMP% — containment.
+proc ::shot_tmpdir {} { set d [file join $::SHOT_ROOT build] ; file mkdir $d ; return $d }
 
 # ---- DIB (BITMAPINFOHEADER) -> Tk photo (24/32-bpp uncompressed) ------------
 proc dib_to_photo {dib} {
@@ -101,6 +115,7 @@ proc main {argv} {
         puts stderr "usage: shot.tcl <ann.exe> - <out.png> \[args ...]"
         exit 2
     }
+    set ::env(ANN_NO_SINGLE_INSTANCE) 1   ;# coexist with a running ann; don't bounce
     if {$script eq "-"} {
         set pid [exec $app {*}$rest &]
     } else {

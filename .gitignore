@@ -1,7 +1,6 @@
-# vendored toolchain (gcc/C23 + Tcl/Tk 9 + SQLite) — huge, machine-built.
-# Self-contained per the methodology: the folder is copy-paste portable, so the
-# toolchain travels by copying the folder, NOT by `git clone`.
-/.toolchain/
+# ann builds against a shared, read-only mal toolchain BUNDLE (named in
+# toolchain.pin, discovered in mal's X\ store) — it is NOT vendored here, so
+# there is no .toolchain/ to ignore. See AGENTS.md / toolchain.md.
 
 # Claude local settings
 /.claude/
@@ -36,6 +35,7 @@
 
 # runtime data created next to the exe (and during dev runs in the repo root)
 /ann.config.tcl
+/ann.config.tcl.tmp
 /ann.db
 /ann.db-wal
 /ann.db-shm

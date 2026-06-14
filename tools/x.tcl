@@ -9,19 +9,40 @@ proc script_root {} {
     if {[file pathtype $s] ne "absolute"} { set s [file join [pwd] $s] }
     return [file dirname [file dirname $s]]
 }
+# Discover the pinned bundle in mal's store: read toolchain.pin (one line: the
+# bundle name) and walk ancestors for X/<pin>/ (verified by its BUNDLE.manifest
+# marker). No absolute path is assumed — mal and this whole tree can live
+# anywhere and be renamed freely. This is the canonical rae/els/ann discovery.
+proc discover_store {root} {
+    set pinfile [file join $root toolchain.pin]
+    if {![file exists $pinfile]} {
+        error "no toolchain.pin in $root — a mal project pins its bundle by name"
+    }
+    set fh [open $pinfile r] ; set pin [string trim [read $fh]] ; close $fh
+    if {$pin eq ""} { error "toolchain.pin is empty in $root" }
+    set dir $root
+    for {set i 0} {$i < 8} {incr i} {
+        set cand [file join $dir X $pin]
+        if {[file exists [file join $cand BUNDLE.manifest]]} { return $cand }
+        set up [file dirname $dir]
+        if {$up eq $dir} break
+        set dir $up
+    }
+    error "bundle '$pin' not found in any ancestor X/ store from $root —\
+           is this project inside the mal folder, and the bundle present?"
+}
 set ROOT [script_root]
-set TC   [file join $ROOT .toolchain]
+set TC   [discover_store $ROOT]
 
 foreach {var rel marker} {
-    TCL_LIBRARY {appfull tcl_library} init.tcl
-    TK_LIBRARY  {appfull tk_library}  tk.tcl
+    TCL_LIBRARY {tcllib tcl_library} init.tcl
+    TK_LIBRARY  {tcllib tk_library}  tk.tcl
 } {
     set p [file join $TC {*}$rel]
     if {[file exists [file join $p $marker]]} { set ::env($var) [file nativename $p] }
 }
 set pkgpaths {}
-foreach p [list [file join $ROOT tools tclpkg] \
-                [file join $TC twapi-dl twapi-5.2.0] \
+foreach p [list [file join $TC twapi-dl twapi-5.2.0] \
                 [file join $TC twapi-dl] \
                 [file join $ROOT build]] {
     if {[file isdirectory $p]} { lappend pkgpaths $p }
@@ -41,19 +62,11 @@ if {[llength $pkgpaths]} {
 # Vendored toolchain wins on PATH (idempotent with x.cmd).  Tcl/Tk 9 BEFORE
 # msys64 (which ships its own Tcl/Tk 8.6 that ann must never use).
 set vbins {}
-foreach b [list [file join $TC tcl9 bin] [file join $TC msys64 ucrt64 bin] \
-                [file join $TC git cmd]] {
+foreach b [list [file join $TC tcl9 bin] [file join $TC msys64 ucrt64 bin]] {
     if {[file isdirectory $b]} { lappend vbins [file nativename $b] }
 }
 if {[llength $vbins]} { set ::env(PATH) "[join $vbins {;}];$::env(PATH)" }
 if {![info exists ::env(MSYSTEM)]} { set ::env(MSYSTEM) UCRT64 }
-
-proc curl-exe {} {
-    foreach c [list [TCp msys64 usr bin curl.exe] [TCp msys64 ucrt64 bin curl.exe]] {
-        if {[file exists $c]} { return $c }
-    }
-    return curl
-}
 
 # ---- path helpers -------------------------------------------------------
 proc P   {args} { return [file join $::ROOT {*}$args] }
@@ -67,7 +80,10 @@ proc gcc     {} { return [TCp msys64 ucrt64 bin gcc.exe] }
 proc gcc-ar  {} { return [TCp msys64 ucrt64 bin gcc-ar.exe] }
 proc windres {} { return [TCp msys64 ucrt64 bin windres.exe] }
 proc strip-exe {} { return [TCp msys64 ucrt64 bin strip.exe] }
-proc sqlitelib {} { return [TCp sqlite libsqlite3.a] }
+# libsqlite3.a is a PROJECT build product (compiled from the bundle's read-only
+# sqlite sources by `x build-sqlite`); it lives in the project's build/, never in
+# the bundle (DESIGN sec.3 — products stay in the project).
+proc sqlitelib {} { return [P build libsqlite3.a] }
 
 # Stream a child's stdout/stderr through to ours; propagate the child's own exit
 # code (a failing test / missing tool is a NORMAL signal), re-raise a genuine
@@ -96,7 +112,7 @@ proc need {args} {
     foreach tool $args {
         set p [tool_path $tool]
         if {$p eq "" || ![file exists $p]} {
-            error "required tool '$tool' is missing — run: x toolcheck --prep"
+            error "required tool '$tool' is missing — the pinned bundle is incomplete (run: mal verify <pin>)"
         }
     }
 }
@@ -105,7 +121,7 @@ proc need {args} {
 proc task_help {args} {
     puts {ann task runner — usage: x <command> [args]
 
-  build-sqlite [--force]  compile .toolchain/sqlite/libsqlite3.a (FTS5 + math)
+  build-sqlite [--force]  compile build/libsqlite3.a (FTS5 + math) from the bundle's sqlite sources
   build [out]        build the native ann.exe — a custom C23 entry point with
                      Tcl+Tk+SQLite statically linked in and PE icon/manifest/
                      version baked via windres (see toolchain.md)
@@ -123,11 +139,9 @@ proc task_help {args} {
                      with the dialog-quiet preamble (tests/probe.tcl) preloaded
   icon               regenerate resources/icon*.png (the key app icon)
   colors [name ...]  browse Tk's named colors (swatches + hex)
-  fetch-twapi        vendor the twapi extension into .toolchain/
-  fetch-git          vendor MinGit into .toolchain/git/
   dist               build + selftest-gate + put the release exe in dist/
-  toolcheck [opts]   check the toolchain — --prep fetches/builds, --deep runs
-                     functional checks (compile C, load Tk, link SQLite, run)
+  toolcheck [--deep] check the pinned bundle has what ann needs (--deep runs
+                     functional checks: compile C, load Tk, link SQLite, run)
   shell              open a shell with the vendored toolchain on PATH
   env                print the resolved toolchain paths + versions
   help               this message}
@@ -151,11 +165,12 @@ proc task_build-sqlite {args} {
     need gcc
     set src [TCp sqlite sqlite3.c]
     set lib [sqlitelib]
-    if {![file exists $src]} { error "sqlite amalgamation missing: $src" }
+    if {![file exists $src]} { error "sqlite amalgamation missing in the bundle: $src" }
     if {[file exists $lib] && [file mtime $lib] >= [file mtime $src] && "--force" ni $args} {
         puts "libsqlite3.a up to date"; return
     }
-    set obj [TCp sqlite sqlite3.o]
+    file mkdir [P build]
+    set obj [P build sqlite3.o]
     puts "cc  sqlite3.c -> libsqlite3.a (FTS5 + math)"
     stream [gcc] -std=gnu23 -O2 \
         -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_MATH_FUNCTIONS \
@@ -208,14 +223,14 @@ proc task_build-ext {args} {
 }
 
 # Build the native ann.exe (THE canonical build): a custom C23 entry point
-# (src/ann_main.c) statically linked against Tcl+Tk (.toolchain/tcl9s) + SQLite
+# (src/ann_main.c) statically linked against Tcl+Tk (the bundle's tcl9s) + SQLite
 # (libsqlite3.a) with the platform layer compiled in and the PE resources baked
 # via windres, then the zipfs payload (tcl_library/tk_library/main.tcl/resources)
 # appended.  Headers come from the SHARED tree (tcl9/include); libs from the
 # STATIC tree (tcl9s/lib).  See toolchain.md / DESIGN §4.
 proc task_build {args} {
     need gcc tclsh
-    if {![file exists [tclshs]]} { error "static tclsh missing (.toolchain/tcl9s) — run `x toolcheck`" }
+    if {![file exists [tclshs]]} { error "static tclsh missing in the bundle (tcl9s/bin) — run `mal verify <pin>`" }
     if {![file exists [sqlitelib]]} { task_build-sqlite }
     # --console builds the GUI-error-proof debug twin (console subsystem, stderr is
     # real text) named ann-con.exe; otherwise the shipped GUI ann.exe.
@@ -362,6 +377,7 @@ proc task_colors {args} {
 # with the cap extension's PrintWindow (occlusion-proof), write a PNG, close it.
 proc task_shot {args} {
     need tclsh twapi
+    if {[lindex $args 0] eq "--selftest"} { stream [tclsh] [P tools shot.tcl] --selftest ; return }
     if {![llength $args]} { error "usage: x shot <out.png> \[args ...]" }
     if {![file exists [P build cap.dll]]} { puts "building capture extension..." ; task_build-ext }
     if {![file exists [P ann.exe]]}       { puts "building ann.exe..."           ; task_build }
@@ -386,48 +402,6 @@ proc task_dist {args} {
     file mkdir [P dist]
     file copy -force [P ann.exe] [P dist ann.exe]
     puts "release staged: [file nativename [P dist ann.exe]]  ([file size [P dist ann.exe]] bytes)"
-}
-
-proc task_fetch-twapi {args} {
-    set ver 5.2 ; set zip twapi-5.2.0.zip
-    set dest [TCp twapi-dl]
-    if {[file exists [file join $dest twapi-5.2.0 pkgIndex.tcl]]} {
-        puts "twapi already vendored at [file join $dest twapi-5.2.0]" ; return
-    }
-    file mkdir $dest
-    set zpath [file join $dest $zip]
-    puts "downloading twapi $ver ..."
-    stream [curl-exe] -L --fail -o $zpath \
-        "https://github.com/apnadkarni/twapi/releases/download/v$ver/$zip"
-    set mp /twapi_extract
-    catch {zipfs unmount $mp}
-    zipfs mount $zpath $mp
-    file copy -force //zipfs:$mp/twapi-5.2.0 [file join $dest twapi-5.2.0]
-    zipfs unmount $mp
-    file delete -force $zpath
-    puts "twapi $ver vendored at [file join $dest twapi-5.2.0]"
-}
-
-proc task_fetch-git {args} {
-    set url [lindex $args 0]
-    if {$url eq ""} {
-        set url "https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/MinGit-2.54.0-64-bit.zip"
-    }
-    set dest [TCp git]
-    if {[file exists [TCp git cmd git.exe]]} { puts "git already vendored at $dest" ; return }
-    file mkdir $dest
-    set zpath [file join $::TC mingit.zip]
-    puts "downloading MinGit from $url ..."
-    stream [curl-exe] -L --fail -o $zpath $url
-    set mp /mingit
-    catch {zipfs unmount $mp}
-    zipfs mount $zpath $mp
-    foreach item [glob -nocomplain -tails -directory //zipfs:$mp *] {
-        file copy -force //zipfs:$mp/$item [file join $dest $item]
-    }
-    zipfs unmount $mp
-    file delete -force $zpath
-    puts "MinGit vendored at $dest"
 }
 
 # ---- dispatch -----------------------------------------------------------
