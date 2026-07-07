@@ -1,16 +1,15 @@
 #!/usr/bin/env tclsh
-# tools/toolcheck.tcl — check the pinned mal bundle has what ann needs (and,
-# with --deep, that it actually works).
+# tools/toolcheck.tcl — check zmal's runtime payloads have what ann needs
+# (and, with --deep, that they actually work).
 #
-#   x toolcheck          report what is present / missing / outdated (+ versions)
-#   x toolcheck --deep   functional checks (compile C, load Tk, link SQLite + FTS5)
+#   z check              report what is present / missing / outdated (+ versions)
+#   z check --deep functional checks (compile C, load Tk, link SQLite + FTS5)
 #
-# The everyday `x` commands do NOT re-verify the whole toolchain (that would tax
+# The everyday `x` commands do NOT re-verify every zmal payload (that would tax
 # every invocation); they fast-check the one or two tools they need and point
-# here.  This is the thorough, on-demand check.  ann does NOT vendor a toolchain:
-# the bundle is mal's, read-only — so a MISSING core piece means the bundle is
-# incomplete (run `mal verify <pin>` from the mal folder), not a fetch-here.  The
-# only build-here product is build/libsqlite3.a (`x build-sqlite`).  Every temp
+# here.  This is the thorough, on-demand check.  A MISSING core piece means
+# a runtime payload was not restored completely, not a fetch-here.  The
+# only build-here product is build/libsqlite3.a (`z build-sqlite`).  Every temp
 # artifact this script writes stays INSIDE the project (build/), never %TEMP%.
 
 proc script_root {} {
@@ -18,27 +17,41 @@ proc script_root {} {
     if {[file pathtype $s] ne "absolute"} { set s [file join [pwd] $s] }
     return [file dirname [file dirname $s]]
 }
-# Discover the pinned bundle (canonical copy in tools/x.tcl): toolchain.pin names
-# it; walk ancestors for X/<pin>/BUNDLE.manifest.
-proc discover_store {root} {
-    set pinfile [file join $root toolchain.pin]
-    if {![file exists $pinfile]} { error "no toolchain.pin in $root" }
-    set fh [open $pinfile r] ; set pin [string trim [read $fh]] ; close $fh
-    if {$pin eq ""} { error "toolchain.pin is empty in $root" }
-    set dir $root
-    for {set i 0} {$i < 8} {incr i} {
-        set cand [file join $dir X $pin]
-        if {[file exists [file join $cand BUNDLE.manifest]]} { return [list $cand $pin] }
-        set up [file dirname $dir]
-        if {$up eq $dir} break
-        set dir $up
-    }
-    error "bundle '$pin' not found in any ancestor X/ store from $root"
+proc zmal_paths {root args} {
+    return [list [file join $root zmal {*}$args] [file join [file dirname $root] zmal {*}$args]]
 }
+
+proc discover_payload {root envs rel marker fallbacks missingPath label} {
+    set candidates {}
+    foreach var $envs {
+        if {[info exists ::env($var)] && $::env($var) ne ""} {
+            lappend candidates [list $::env($var) env:$var]
+        }
+    }
+    foreach p [zmal_paths $root {*}$rel] { lappend candidates [list $p zmal] }
+    foreach p $fallbacks { lappend candidates [list $p legacy] }
+    foreach c $candidates {
+        lassign $c p found
+        set p [file normalize $p]
+        if {[file exists [file join $p {*}$marker]]} { return [list $p $found] }
+    }
+    return [list [file normalize $missingPath] missing]
+}
+
 set ROOT [script_root]
-lassign [discover_store $ROOT] TC PIN
+lassign [discover_payload $ROOT {Z_TCLTK} {r tcltk 9.0.3} \
+    {tcl9 bin tclsh90.exe} [list] [file join $ROOT zmal r tcltk 9.0.3] tcltk] TC PIN
+lassign [discover_payload $ROOT {Z_MSYS2} {r msys2} \
+    {ucrt64 bin gcc.exe} [list] [file join $ROOT zmal r msys2] msys2] MSYS2 MSYSPIN
+lassign [discover_payload $ROOT {Z_SQLITE} {r sqlite 3.51.0} \
+    {sqlite3.c} [list] [file join $ROOT zmal r sqlite 3.51.0] sqlite] SQLITE SQLITEPIN
+lassign [discover_payload $ROOT {Z_TWAPI} {r twapi 5.2.0} \
+    {pkgIndex.tcl} [list] [file join $ROOT zmal r twapi 5.2.0] twapi] TWAPI TWAPIPIN
 proc P   {args} { return [file join $::ROOT {*}$args] }
 proc TCp {args} { return [file join $::TC   {*}$args] }
+proc MSYSp {args} { return [file join $::MSYS2 {*}$args] }
+proc SQLITEp {args} { return [file join $::SQLITE {*}$args] }
+proc TWAPIp {args} { return [file join $::TWAPI {*}$args] }
 
 foreach {var rel marker} {
     TCL_LIBRARY {tcllib tcl_library} init.tcl
@@ -48,7 +61,7 @@ foreach {var rel marker} {
     if {[file exists [file join $p $marker]]} { set ::env($var) [file nativename $p] }
 }
 set pkgpaths {}
-foreach p [list [TCp twapi-dl twapi-5.2.0] [TCp twapi-dl]] {
+foreach p [list $TWAPI] {
     if {[file isdirectory $p]} { lappend pkgpaths $p }
 }
 if {[llength $pkgpaths]} {
@@ -57,27 +70,33 @@ if {[llength $pkgpaths]} {
     set auto_path [concat $pkgpaths $auto_path]
 }
 
-# Component manifest.  kind: core (build/test/run) | opt.  loc: tc (in the bundle)
-# | root (a project product).  want: pinned version ("" = don't compare).
+# Component manifest. kind: core (build/test/run) | opt. loc: tc, msys, sqlite,
+# twapi, or root (a project product). want: pinned version ("" = don't compare).
 set ::COMPONENTS {
     {key tcl    name "Tcl/Tk 9 (shared)"   loc tc   probe {tcl9 bin tclsh90.exe}              kind core want 9.0.3}
-    {key gcc    name "gcc / C23 (UCRT64)"  loc tc   probe {msys64 ucrt64 bin gcc.exe}         kind core want 16.1.0}
+    {key gcc    name "gcc / C23 (UCRT64)"  loc msys probe {ucrt64 bin gcc.exe}                kind core want 16.1.0}
     {key tcls   name "Tcl/Tk 9 (static)"   loc tc   probe {tcl9s bin tclsh90s.exe}            kind core want 9.0.3}
-    {key sqlsrc name "SQLite amalgamation" loc tc   probe {sqlite sqlite3.c}                  kind core want 3.51.0}
+    {key sqlsrc name "SQLite amalgamation" loc sqlite probe {sqlite3.c}                       kind core want 3.51.0}
     {key sqlite name "SQLite static lib"   loc root probe {build libsqlite3.a}                kind core want 3.51.0}
-    {key twapi  name "twapi"               loc tc   probe {twapi-dl twapi-5.2.0 pkgIndex.tcl} kind core want 5.2.0}
+    {key twapi  name "twapi"               loc twapi probe {pkgIndex.tcl}                     kind core want 5.2.0}
     {key manual name "Tcl/Tk + C-API manual" loc tc probe {manual INDEX.md}                   kind opt  want {}}
     {key tclsrc name "Tcl/Tk 9 source"     loc tc   probe {tclsrc tcl9.0.3 generic tcl.h}     kind opt  want {}}
 }
 
 proc comp_path {comp args} {
     set rel [concat [dict get $comp probe] $args]
-    return [expr {[dict get $comp loc] eq "root" ? [P {*}$rel] : [TCp {*}$rel]}]
+    switch [dict get $comp loc] {
+        root { return [P {*}$rel] }
+        msys { return [MSYSp {*}$rel] }
+        sqlite { return [SQLITEp {*}$rel] }
+        twapi { return [TWAPIp {*}$rel] }
+        default { return [TCp {*}$rel] }
+    }
 }
 proc present {comp} { return [file exists [comp_path $comp]] }
 
 proc sqlite_header_version {} {
-    set h [TCp sqlite sqlite3.h]
+    set h [SQLITEp sqlite3.h]
     if {![catch {open $h r} fh]} {
         set d [read $fh] ; close $fh
         if {[regexp {define SQLITE_VERSION\s+"([0-9.]+)"} $d -> v]} { return $v }
@@ -91,7 +110,7 @@ proc version_of {comp} {
                     return "ERROR: [string map [list \n { }] [string trim $v]]" } }
         tcls  { if {[catch {exec [TCp tcl9s bin tclsh90s.exe] << {puts [info patchlevel]}} v]} {
                     return "ERROR: [string map [list \n { }] [string trim $v]]" } }
-        gcc   { catch {exec [TCp msys64 ucrt64 bin gcc.exe] -dumpversion} v }
+        gcc   { catch {exec [comp_path $comp] -dumpversion} v }
         sqlsrc { set v [sqlite_header_version] }
         sqlite { set v [sqlite_header_version] }
         twapi { set idx [comp_path $comp]
@@ -112,7 +131,10 @@ proc status_of {comp} {
 
 proc report {} {
     puts ""
-    puts "ann toolcheck  —  bundle '$::PIN' at [file nativename $::TC]"
+    puts "ann toolcheck  —  Tcl/Tk at [file nativename $::TC]"
+    puts "                  MSYS2  at [file nativename $::MSYS2]"
+    puts "                  SQLite at [file nativename $::SQLITE]"
+    puts "                  twapi  at [file nativename $::TWAPI]"
     puts ""
     puts [format "  %-24s %-9s %s" COMPONENT STATUS VERSION/NOTE]
     puts "  [string repeat - 60]"
@@ -127,9 +149,11 @@ proc report {} {
                        if {$kind eq "core"} { incr issues } }
             missing  { set status [expr {$kind eq "core" ? "MISSING" : "(absent)"}]
                        if {[dict get $c key] eq "sqlite"} {
-                           set note "run:  x build-sqlite"
+                           set note "run:  z build-sqlite"
+                       } elseif {[dict get $c loc] ne "root"} {
+                           set note "restore zmal runtime payloads"
                        } elseif {$kind eq "core"} {
-                           set note "bundle incomplete — run:  mal verify $::PIN"
+                           set note "restore project build product"
                        } else { set note "" }
                        if {$kind eq "core"} { incr issues } }
         }
@@ -153,7 +177,7 @@ proc deep_line {name ok detail} {
 }
 # Compile a tiny stubs extension and load it — proves gcc + headers + stubs + load.
 proc deep_ext {} {
-    set gcc [TCp msys64 ucrt64 bin gcc.exe]
+    set gcc [MSYSp ucrt64 bin gcc.exe]
     if {![file exists $gcc]} { return [deep_line "C23<->Tcl extension" 0 "gcc missing"] }
     set t [tmpdir]; file delete -force $t; file mkdir $t
     set c [file join $t tcverify.c]; set dll [file join $t tcverify.dll]
@@ -167,15 +191,15 @@ proc deep_ext {} {
             $c -o $dll -L[TCp tcl9 lib] -ltclstub -static-libgcc} e]} {
         set ok 0; set detail "compile failed: $e"
     } else {
-        lassign [tcl_eval "load {[fwd $dll]} Tcverify; puts \[tcverify\]"] lok lout
-        if {!$lok || [string trim $lout] ne "1234"} { set ok 0; set detail "load failed: $lout" }
+        lassign [tcl_eval "load {[fwd $dll]} Tcverify; puts \[tcverify\]"] loadOk lout
+        if {!$loadOk || [string trim $lout] ne "1234"} { set ok 0; set detail "load failed: $lout" }
     }
     file delete -force $t
     return [deep_line "C23<->Tcl extension" $ok $detail]
 }
 # Confirm the C build resolves Tcl 9's header — NOT msys64's bundled 8.6.
 proc deep_header {} {
-    set gcc [TCp msys64 ucrt64 bin gcc.exe]
+    set gcc [MSYSp ucrt64 bin gcc.exe]
     if {![file exists $gcc]} { return [deep_line "C build uses Tcl 9 header" 0 "gcc missing"] }
     set t [tmpdir] ; file delete -force $t ; file mkdir $t
     set c [file join $t hv.c]
@@ -187,10 +211,10 @@ proc deep_header {} {
 }
 # Compile a tiny console program against build/libsqlite3.a, run it, prove FTS5.
 proc deep_sqlite {} {
-    set gcc [TCp msys64 ucrt64 bin gcc.exe]
+    set gcc [MSYSp ucrt64 bin gcc.exe]
     set lib [P build libsqlite3.a]
     if {![file exists $gcc]} { return [deep_line "SQLite FTS5 links + runs" 0 "gcc missing"] }
-    if {![file exists $lib]} { return [deep_line "SQLite FTS5 links + runs" 0 "libsqlite3.a missing — run: x build-sqlite"] }
+    if {![file exists $lib]} { return [deep_line "SQLite FTS5 links + runs" 0 "libsqlite3.a missing — run: z build-sqlite"] }
     set t [tmpdir]; file delete -force $t; file mkdir $t
     set c [file join $t sqv.c]; set exe [file join $t sqv.exe]
     set fh [open $c w]
@@ -216,7 +240,7 @@ int main(void){
 }}
     close $fh
     set ok 1 ; set detail ""
-    if {[catch {exec $gcc -std=gnu23 -O1 -I[TCp sqlite] $c $lib -o $exe} e]} {
+    if {[catch {exec $gcc -std=gnu23 -O1 -I$::SQLITE $c $lib -o $exe} e]} {
         set ok 0 ; set detail "link failed: $e"
     } else {
         if {[catch {exec $exe} out]} { set ok 0; set detail "run failed: $out" } else {
@@ -247,10 +271,10 @@ set issues [report]
 if {$doDeep} { incr issues [deep] }
 puts ""
 if {$issues > 0} {
-    puts "  $issues issue(s).  A MISSING core piece means the bundle is incomplete"
-    puts "  (run `mal verify $PIN`); build/libsqlite3.a is `x build-sqlite`."
+    puts "  $issues issue(s).  A MISSING core piece means ann's zmal runtime payload is incomplete;"
+    puts "  build/libsqlite3.a is `z build-sqlite`."
     exit 1
 }
 puts [expr {$doDeep ? "  all components present, current, and functional." \
-                    : "  all core components present and current.  (`x toolcheck --deep` verifies they work)"}]
+                    : "  all core components present and current.  (`z check --deep` verifies they work)"}]
 exit 0

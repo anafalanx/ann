@@ -1,7 +1,7 @@
 #!/usr/bin/env tclsh
 # tools/genres.tcl -- generate the native build's PE resource inputs from Tcl, so
 # they are build artifacts (gitignored), not committed .rc/.manifest source. This
-# keeps the repo strictly Tcl + C + one .cmd (the language policy): the only
+# keeps the repo strictly Tcl + C (the language policy): the only
 # Windows-resource/XML content lives here, in Tcl, and is emitted at build time —
 # the same way tools/mkico.tcl emits ann.ico.
 #

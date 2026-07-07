@@ -1,0 +1,24 @@
+{
+  "commands": {
+    "ann": ["tclsh90", "tools/x.tcl"],
+    "x": ["tclsh90", "tools/x.tcl"],
+    "check": ["tclsh90", "tools/x.tcl", "toolcheck"],
+    "toolcheck": ["tclsh90", "tools/x.tcl", "toolcheck"],
+    "smoke": ["tclsh90", "tools/x.tcl", "test", "--fast"],
+    "test": ["tclsh90", "tools/x.tcl", "test"],
+    "build": ["tclsh90", "tools/x.tcl", "build"],
+    "build-con": ["tclsh90", "tools/x.tcl", "build-con"],
+    "build-ext": ["tclsh90", "tools/x.tcl", "build-ext"],
+    "build-sqlite": ["tclsh90", "tools/x.tcl", "build-sqlite"],
+    "run": ["tclsh90", "tools/x.tcl", "run"],
+    "run-dev": ["tclsh90", "tools/x.tcl", "run-dev"],
+    "selftest": ["tclsh90", "tools/x.tcl", "selftest"],
+    "dist": ["tclsh90", "tools/x.tcl", "dist"],
+    "shot": ["tclsh90", "tools/x.tcl", "shot"],
+    "hktest": ["tclsh90", "tools/x.tcl", "hktest"],
+    "launchtest": ["tclsh90", "tools/x.tcl", "launchtest"],
+    "probe": ["tclsh90", "tools/x.tcl", "probe"],
+    "icon": ["tclsh90", "tools/x.tcl", "icon"],
+    "colors": ["tclsh90", "tools/x.tcl", "colors"]
+  }
+}

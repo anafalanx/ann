@@ -59,28 +59,42 @@ threading model, and every locked decision: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Toolchain & tasks
 
-`ann` lives **inside the mal folder** and builds against a shared, read-only
-toolchain **bundle** (Tcl/Tk 9, the gcc/C23 toolchain, the SQLite amalgamation,
-twapi) pinned by `toolchain.pin` (currently `tika26b`) — discovered by walking
-ancestors to mal's `X/<pin>/`, so the whole tree relocates freely and ann writes
-nothing outside its own folder. One ignition script, `x.cmd`, puts the bundle's
-toolchain on PATH and hands off to the Tcl task runner:
+`ann` builds with regular z runtime payloads under `..\r\`: MSYS2 UCRT64,
+Tcl/Tk 9, SQLite sources, twapi, and the Tcl/Tk manual. The development layout
+is one maintained `C:\z` workspace with ann hosted at `C:\z\_ann`.
+z provides the build environment; ann keeps its source, `z.json`, generated
+build products, and release `ann.exe`.
+
+The preferred developer front door is z: from `_ann`, use `z <command>` if
+z is on PATH or `..\z.exe <command>` otherwise. From the z workspace root, use
+`z in ann <command>`. The committed `z.json` maps project commands to ann's Tcl
+task runner, so `z` is the outer interface and Tcl launches `tools/x.tcl` from
+the project root.
+
+`z.exe` is the z workspace's only public entry point for project work: do not call paths
+under `..\r\...`, `..\t\...`, `..\s\...`, or vendored tool binaries directly
+from docs or automation. For z-backed work, strongly
+avoid PowerShell and Windows cmd. Use them only as the outer launcher for
+`z.exe`; prefer `z <tool>`, `z bash -c "..."`, or the named commands in
+`z.json`, and do not add `.ps1`, `.bat`, or `.cmd` glue.
 
 ```
-x help          # list tasks
-x build         # build the native ann.exe (static Tcl+Tk+SQLite, zipfs payload)
-x build-con     # the console-subsystem debug twin (stderr is readable text)
-x test          # in-process suite (110 tests; tcltest + Tk event generate)
-x selftest      # ann.exe --selftest headless smoke (exit code = result)
-x hktest        # end-to-end: synthesize Alt+Space, verify the popup toggles
-x launchtest    # end-to-end: index, type a query, Enter, verify the app starts
-x shot out.png  # screenshot the popup (PrintWindow, occlusion-proof)
-x dist          # build + selftest-gate + put the release exe in dist/
-x toolcheck     # verify the vendored toolchain (--deep runs functional checks)
+z check          # verify z runtime payloads
+z smoke          # fast in-process suite
+z build          # build the native ann.exe (static Tcl+Tk+SQLite, zipfs payload)
+z build-con      # the console-subsystem debug twin (stderr is readable text)
+z test           # full in-process suite (tcltest + Tk event generate)
+z selftest       # ann.exe --selftest headless smoke (exit code = result)
+z hktest         # end-to-end: synthesize Alt+Space, verify the popup toggles
+z launchtest     # end-to-end: index, type a query, Enter, verify the app starts
+z shot out.png   # screenshot the popup (PrintWindow, occlusion-proof)
+z dist           # build + selftest-gate + put the release exe in dist/
+z x help         # pass through to the underlying Tcl task runner
 ```
 
-See [`toolchain.md`](toolchain.md) for the full setup, the static-link recipe,
-and the rules that keep the repo Tcl + C23 + one `.cmd`.
+See [`toolchain.md`](toolchain.md) for the build-environment notes, the
+static-link recipe, and the rules that keep the repo Tcl + C23, with z as the
+outer portable toolbox.
 
 ## About
 

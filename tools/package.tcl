@@ -19,25 +19,23 @@ proc script_root {} {
     if {[file pathtype $s] ne "absolute"} { set s [file join [pwd] $s] }
     return [file dirname [file dirname $s]]
 }
-# Discover the pinned bundle in mal's store (canonical copy in tools/x.tcl):
-# toolchain.pin names it; walk ancestors for X/<pin>/BUNDLE.manifest.
-proc discover_store {root} {
-    set pinfile [file join $root toolchain.pin]
-    if {![file exists $pinfile]} { error "no toolchain.pin in $root" }
-    set fh [open $pinfile r] ; set pin [string trim [read $fh]] ; close $fh
-    if {$pin eq ""} { error "toolchain.pin is empty in $root" }
-    set dir $root
-    for {set i 0} {$i < 8} {incr i} {
-        set cand [file join $dir X $pin]
-        if {[file exists [file join $cand BUNDLE.manifest]]} { return $cand }
-        set up [file dirname $dir]
-        if {$up eq $dir} break
-        set dir $up
+proc zmal_paths {root args} {
+    return [list [file join $root zmal {*}$args] [file join [file dirname $root] zmal {*}$args]]
+}
+proc discover_tcltk {root} {
+    set candidates {}
+    if {[info exists ::env(Z_TCLTK)] && $::env(Z_TCLTK) ne ""} {
+        lappend candidates $::env(Z_TCLTK)
     }
-    error "bundle '$pin' not found in any ancestor X/ store from $root"
+    lappend candidates {*}[zmal_paths $root r tcltk 9.0.3]
+    foreach p $candidates {
+        set p [file normalize $p]
+        if {[file exists [file join $p tcl9 bin tclsh90.exe]]} { return $p }
+    }
+    error "zmal Tcl/Tk payload not found for $root"
 }
 set ROOT [script_root]
-set TC   [discover_store $ROOT]
+set TC   [discover_tcltk $ROOT]
 proc TCp {args} { return [file join $::TC {*}$args] }
 proc copy_tree {src dst} {
     file mkdir $dst

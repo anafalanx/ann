@@ -1,38 +1,54 @@
 #!/usr/bin/env tclsh
 # tools/x.tcl — the ann task runner.  ALL project tooling lives here (Tcl), plus
-# C built by the vendored gcc.  Normally invoked through x.cmd (which sets PATH to
-# the vendored toolchain first); this script re-asserts PATH itself so it is also
-# robust when run directly with the vendored tclsh.
+# C built by zmal's vendored gcc. Normally invoked through zmal project commands,
+# which start this script with zmal's tclsh90; this script re-asserts PATH itself
+# so it is also robust when run directly with the vendored tclsh.
 
 proc script_root {} {
     set s [info script]
     if {[file pathtype $s] ne "absolute"} { set s [file join [pwd] $s] }
     return [file dirname [file dirname $s]]
 }
-# Discover the pinned bundle in mal's store: read toolchain.pin (one line: the
-# bundle name) and walk ancestors for X/<pin>/ (verified by its BUNDLE.manifest
-# marker). No absolute path is assumed — mal and this whole tree can live
-# anywhere and be renamed freely. This is the canonical rae/els/ann discovery.
-proc discover_store {root} {
-    set pinfile [file join $root toolchain.pin]
-    if {![file exists $pinfile]} {
-        error "no toolchain.pin in $root — a mal project pins its bundle by name"
+proc zmal_paths {root args} {
+    set out {}
+    if {[info exists ::env(Z_ROOT)] && $::env(Z_ROOT) ne ""} {
+        lappend out [file join $::env(Z_ROOT) {*}$args]
     }
-    set fh [open $pinfile r] ; set pin [string trim [read $fh]] ; close $fh
-    if {$pin eq ""} { error "toolchain.pin is empty in $root" }
-    set dir $root
-    for {set i 0} {$i < 8} {incr i} {
-        set cand [file join $dir X $pin]
-        if {[file exists [file join $cand BUNDLE.manifest]]} { return $cand }
-        set up [file dirname $dir]
-        if {$up eq $dir} break
-        set dir $up
-    }
-    error "bundle '$pin' not found in any ancestor X/ store from $root —\
-           is this project inside the mal folder, and the bundle present?"
+    # Hosted layout: <zmal>/_ann, so the zmal root is the project parent.
+    lappend out [file join [file dirname $root] {*}$args]
+    # Legacy transition layouts: embedded zmal, or sibling zmal.
+    lappend out [file join $root zmal {*}$args] [file join [file dirname $root] zmal {*}$args]
+    return $out
 }
+
+proc discover_payload {root envs rel marker fallbacks missingPath} {
+    set candidates {}
+    foreach var $envs {
+        if {[info exists ::env($var)] && $::env($var) ne ""} {
+            lappend candidates $::env($var)
+        }
+    }
+    lappend candidates {*}[zmal_paths $root {*}$rel] {*}$fallbacks
+    foreach p $candidates {
+        set p [file normalize $p]
+        if {[file exists [file join $p {*}$marker]]} { return $p }
+    }
+    return [file normalize $missingPath]
+}
+
 set ROOT [script_root]
-set TC   [discover_store $ROOT]
+set TC [discover_payload $ROOT {Z_TCLTK} {r tcltk 9.0.3} \
+    {tcl9 bin tclsh90.exe} [list] [file join $ROOT zmal r tcltk 9.0.3]]
+set MSYS2 [discover_payload $ROOT {Z_MSYS2} {r msys2} \
+    {ucrt64 bin gcc.exe} [list] [file join $ROOT zmal r msys2]]
+set SQLITE [discover_payload $ROOT {Z_SQLITE} {r sqlite 3.51.0} \
+    {sqlite3.c} [list] [file join $ROOT zmal r sqlite 3.51.0]]
+set TWAPI [discover_payload $ROOT {Z_TWAPI} {r twapi 5.2.0} \
+    {pkgIndex.tcl} [list] [file join $ROOT zmal r twapi 5.2.0]]
+set ::env(Z_TCLTK)  [file nativename $TC]
+set ::env(Z_MSYS2)  [file nativename $MSYS2]
+set ::env(Z_SQLITE) [file nativename $SQLITE]
+set ::env(Z_TWAPI)  [file nativename $TWAPI]
 
 foreach {var rel marker} {
     TCL_LIBRARY {tcllib tcl_library} init.tcl
@@ -42,8 +58,7 @@ foreach {var rel marker} {
     if {[file exists [file join $p $marker]]} { set ::env($var) [file nativename $p] }
 }
 set pkgpaths {}
-foreach p [list [file join $TC twapi-dl twapi-5.2.0] \
-                [file join $TC twapi-dl] \
+foreach p [list $TWAPI \
                 [file join $ROOT build]] {
     if {[file isdirectory $p]} { lappend pkgpaths $p }
 }
@@ -59,10 +74,10 @@ if {[llength $pkgpaths]} {
     set auto_path [concat $pkgpaths $auto_path]
 }
 
-# Vendored toolchain wins on PATH (idempotent with x.cmd).  Tcl/Tk 9 BEFORE
-# msys64 (which ships its own Tcl/Tk 8.6 that ann must never use).
+# zmal runtime wins on PATH. Tcl/Tk 9 BEFORE MSYS2, which ships its own
+# Tcl/Tk 8.6 that ann must never use.
 set vbins {}
-foreach b [list [file join $TC tcl9 bin] [file join $TC msys64 ucrt64 bin]] {
+foreach b [list [file join $TC tcl9 bin] [file join $MSYS2 ucrt64 bin] [file join $MSYS2 usr bin]] {
     if {[file isdirectory $b]} { lappend vbins [file nativename $b] }
 }
 if {[llength $vbins]} { set ::env(PATH) "[join $vbins {;}];$::env(PATH)" }
@@ -71,18 +86,20 @@ if {![info exists ::env(MSYSTEM)]} { set ::env(MSYSTEM) UCRT64 }
 # ---- path helpers -------------------------------------------------------
 proc P   {args} { return [file join $::ROOT {*}$args] }
 proc TCp {args} { return [file join $::TC   {*}$args] }
+proc MSYSp {args} { return [file join $::MSYS2 {*}$args] }
+proc SQLITEp {args} { return [file join $::SQLITE {*}$args] }
+proc TWAPIp {args} { return [file join $::TWAPI {*}$args] }
 # RULE: always go through these explicit vendored Tcl/Tk 9 paths — NEVER a bare
 # `tclsh`/`wish`, which on PATH could resolve to msys64's Tcl/Tk 8.6.
 proc tclsh   {} { return [TCp tcl9 bin tclsh90.exe] }
 proc wish    {} { return [TCp tcl9 bin wish90.exe] }
 proc tclshs  {} { return [TCp tcl9s bin tclsh90s.exe] }
-proc gcc     {} { return [TCp msys64 ucrt64 bin gcc.exe] }
-proc gcc-ar  {} { return [TCp msys64 ucrt64 bin gcc-ar.exe] }
-proc windres {} { return [TCp msys64 ucrt64 bin windres.exe] }
-proc strip-exe {} { return [TCp msys64 ucrt64 bin strip.exe] }
-# libsqlite3.a is a PROJECT build product (compiled from the bundle's read-only
-# sqlite sources by `x build-sqlite`); it lives in the project's build/, never in
-# the bundle (DESIGN sec.3 — products stay in the project).
+proc gcc     {} { return [MSYSp ucrt64 bin gcc.exe] }
+proc gcc-ar  {} { return [MSYSp ucrt64 bin gcc-ar.exe] }
+proc windres {} { return [MSYSp ucrt64 bin windres.exe] }
+proc strip-exe {} { return [MSYSp ucrt64 bin strip.exe] }
+# libsqlite3.a is a PROJECT build product (compiled from zmal's read-only SQLite
+# sources by `z build-sqlite`); it lives in the project's build/, never in zmal.
 proc sqlitelib {} { return [P build libsqlite3.a] }
 
 # Stream a child's stdout/stderr through to ours; propagate the child's own exit
@@ -98,13 +115,13 @@ proc stream {args} {
 }
 
 # Cheap per-command guard: a task declares the tool(s) it needs; we only check
-# those exist (a microsecond `file exists`), and point at `x toolcheck`.
+# those exist (a microsecond `file exists`), and point at `z check`.
 proc tool_path {tool} {
     switch $tool {
         tclsh { return [tclsh] }
         wish  { return [wish] }
         gcc   { return [gcc] }
-        twapi { return [TCp twapi-dl twapi-5.2.0 pkgIndex.tcl] }
+        twapi { return [TWAPIp pkgIndex.tcl] }
         default { return "" }
     }
 }
@@ -112,22 +129,22 @@ proc need {args} {
     foreach tool $args {
         set p [tool_path $tool]
         if {$p eq "" || ![file exists $p]} {
-            error "required tool '$tool' is missing — the pinned bundle is incomplete (run: mal verify <pin>)"
+            error "required tool '$tool' is missing - restore zmal's runtime payloads"
         }
     }
 }
 
 # ---- tasks --------------------------------------------------------------
 proc task_help {args} {
-    puts {ann task runner — usage: x <command> [args]
+    puts {ann task runner — usage: z <command> [args]  (or: z x <command> [args])
 
-  build-sqlite [--force]  compile build/libsqlite3.a (FTS5 + math) from the bundle's sqlite sources
+  build-sqlite [--force]  compile build/libsqlite3.a (FTS5 + math) from zmal SQLite sources
   build [out]        build the native ann.exe — a custom C23 entry point with
                      Tcl+Tk+SQLite statically linked in and PE icon/manifest/
                      version baked via windres (see toolchain.md)
   build-con [out]    build ann-con.exe — the console-subsystem debug twin whose
                      stderr is real text (startup/runtime errors are readable)
-  build-ext          compile src/*.c -> build/*.dll dev extensions (for x run-dev)
+  build-ext          compile src/*.c -> build/*.dll dev extensions (for run-dev)
   run [args]         launch the built ann.exe (builds it first if missing)
   run-dev [args]     launch ann under wish + the dev .dll extensions (fast Tcl loop)
   selftest [exe]     run ann.exe --selftest and print the headless report
@@ -140,21 +157,36 @@ proc task_help {args} {
   icon               regenerate resources/icon*.png (the key app icon)
   colors [name ...]  browse Tk's named colors (swatches + hex)
   dist               build + selftest-gate + put the release exe in dist/
-  toolcheck [--deep] check the pinned bundle has what ann needs (--deep runs
+  toolcheck [--deep] check zmal runtime payloads have what ann needs (--deep runs
                      functional checks: compile C, load Tk, link SQLite, run)
-  shell              open a shell with the vendored toolchain on PATH
-  env                print the resolved toolchain paths + versions
+  shell              open a shell with zmal runtime payloads on PATH
+  env                print the resolved zmal payload paths + versions
   help               this message}
 }
 
 proc task_env {args} {
     puts "ROOT  = $::ROOT"
-    foreach {label path} [list tclsh [tclsh] wish [wish] gcc [gcc] sqlite-lib [sqlitelib]] {
+    puts "TC    = $::TC"
+    puts "MSYS2 = $::MSYS2"
+    puts "SQLITE= $::SQLITE"
+    puts "TWAPI = $::TWAPI"
+    foreach {label path} [list tclsh [tclsh] wish [wish] gcc [gcc] windres [windres] sqlite-lib [sqlitelib]] {
         puts [format "  %-10s %s  (%s)" $label $path \
             [expr {[file exists $path] ? "ok" : "MISSING"}]]
     }
     catch {puts "  gcc       [exec [gcc] -dumpversion]"}
     catch {puts "  tcl       [exec [tclsh] << {puts [info patchlevel]}]"}
+}
+
+proc task_shell {args} {
+    set comspec [expr {[info exists ::env(COMSPEC)] && $::env(COMSPEC) ne "" ? $::env(COMSPEC) : "cmd.exe"}]
+    set ::env(PROMPT) "ann$G$S"
+    puts ""
+    puts "  ann zmal runtime shell - Tcl/Tk and MSYS2 UCRT64 are on PATH."
+    puts "  Try:  z x help   z check   z build     (or 'exit' to leave)"
+    puts ""
+    flush stdout
+    exec $comspec /k <@ stdin >@ stdout 2>@ stderr
 }
 
 proc task_toolcheck {args} { stream [tclsh] [P tools toolcheck.tcl] {*}$args }
@@ -163,9 +195,9 @@ proc task_toolcheck {args} { stream [tclsh] [P tools toolcheck.tcl] {*}$args }
 # Idempotent: skips when libsqlite3.a is newer than the source unless --force.
 proc task_build-sqlite {args} {
     need gcc
-    set src [TCp sqlite sqlite3.c]
+    set src [SQLITEp sqlite3.c]
     set lib [sqlitelib]
-    if {![file exists $src]} { error "sqlite amalgamation missing in the bundle: $src" }
+    if {![file exists $src]} { error "sqlite amalgamation missing in zmal runtime payloads: $src" }
     if {[file exists $lib] && [file mtime $lib] >= [file mtime $src] && "--force" ni $args} {
         puts "libsqlite3.a up to date"; return
     }
@@ -191,7 +223,7 @@ proc task_build-ext {args} {
     if {![file exists [sqlitelib]]} { task_build-sqlite }
     set inc [TCp tcl9 include]
     set lib [TCp tcl9 lib]
-    set sqinc [TCp sqlite]
+    set sqinc $::SQLITE
     file mkdir [P build]
     set sources {}
     foreach s [lsort [glob -nocomplain [P src *.c]]] {
@@ -223,14 +255,14 @@ proc task_build-ext {args} {
 }
 
 # Build the native ann.exe (THE canonical build): a custom C23 entry point
-# (src/ann_main.c) statically linked against Tcl+Tk (the bundle's tcl9s) + SQLite
+# (src/ann_main.c) statically linked against Tcl+Tk (zmal's tcl9s) + SQLite
 # (libsqlite3.a) with the platform layer compiled in and the PE resources baked
 # via windres, then the zipfs payload (tcl_library/tk_library/main.tcl/resources)
 # appended.  Headers come from the SHARED tree (tcl9/include); libs from the
 # STATIC tree (tcl9s/lib).  See toolchain.md / DESIGN §4.
 proc task_build {args} {
     need gcc tclsh
-    if {![file exists [tclshs]]} { error "static tclsh missing in the bundle (tcl9s/bin) — run `mal verify <pin>`" }
+    if {![file exists [tclshs]]} { error "static tclsh missing in zmal runtime payloads (tcl9s/bin)" }
     if {![file exists [sqlitelib]]} { task_build-sqlite }
     # --console builds the GUI-error-proof debug twin (console subsystem, stderr is
     # real text) named ann-con.exe; otherwise the shipped GUI ann.exe.
@@ -240,7 +272,7 @@ proc task_build {args} {
     }
     if {$out eq ""} { set out [P [expr {$console ? "ann-con.exe" : "ann.exe"}]] }
     set inc  [TCp tcl9 include]
-    set sqinc [TCp sqlite]
+    set sqinc $::SQLITE
     set libd [TCp tcl9s lib]
     set tag  [expr {$console ? "con" : ""}]
     file mkdir [P build]
@@ -318,7 +350,7 @@ proc task_run-dev {args} {
 
 proc task_selftest {args} {
     set exe [lindex $args 0] ; if {$exe eq ""} { set exe [P ann.exe] }
-    if {![file exists $exe]} { error "exe not found: $exe — run `x build`" }
+    if {![file exists $exe]} { error "exe not found: $exe — run `z build`" }
     set rpt [P build selftest.txt]
     catch {file delete -force $rpt}
     set rc [catch {exec $exe --selftest $rpt} err opts]

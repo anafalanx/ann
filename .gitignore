@@ -1,6 +1,5 @@
-# ann builds against a shared, read-only mal toolchain BUNDLE (named in
-# toolchain.pin, discovered in mal's X\ store) — it is NOT vendored here, so
-# there is no .toolchain/ to ignore. See AGENTS.md / toolchain.md.
+# legacy embedded zmal toolbox dir (pre-rename layout; may reappear on old checkouts)
+/zmal/
 
 # Claude local settings
 /.claude/

@@ -21,24 +21,23 @@ proc script_root {} {
     if {[file pathtype $s] ne "absolute"} { set s [file join [pwd] $s] }
     return [file dirname [file dirname $s]]
 }
-# Discover the pinned bundle (canonical copy in tools/x.tcl) for twapi's package.
-proc discover_store {root} {
-    set pinfile [file join $root toolchain.pin]
-    if {![file exists $pinfile]} { error "no toolchain.pin in $root" }
-    set fh [open $pinfile r] ; set pin [string trim [read $fh]] ; close $fh
-    if {$pin eq ""} { error "toolchain.pin is empty in $root" }
-    set dir $root
-    for {set i 0} {$i < 8} {incr i} {
-        set cand [file join $dir X $pin]
-        if {[file exists [file join $cand BUNDLE.manifest]]} { return $cand }
-        set up [file dirname $dir]
-        if {$up eq $dir} break
-        set dir $up
+proc zmal_paths {root args} {
+    return [list [file join $root zmal {*}$args] [file join [file dirname $root] zmal {*}$args]]
+}
+proc discover_twapi {root} {
+    set candidates {}
+    if {[info exists ::env(Z_TWAPI)] && $::env(Z_TWAPI) ne ""} {
+        lappend candidates $::env(Z_TWAPI)
     }
-    error "bundle '$pin' not found in any ancestor X/ store from $root"
+    lappend candidates {*}[zmal_paths $root r twapi 5.2.0]
+    foreach p $candidates {
+        set p [file normalize $p]
+        if {[file exists [file join $p pkgIndex.tcl]]} { return $p }
+    }
+    error "zmal twapi payload not found for $root"
 }
 set ::SHOT_ROOT [script_root]
-catch { lappend auto_path [file join [discover_store $::SHOT_ROOT] twapi-dl] }
+catch { lappend auto_path [discover_twapi $::SHOT_ROOT] }
 
 # Temp work stays INSIDE the project (build/), never %TEMP% — containment.
 proc ::shot_tmpdir {} { set d [file join $::SHOT_ROOT build] ; file mkdir $d ; return $d }
