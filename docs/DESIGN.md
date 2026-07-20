@@ -804,6 +804,17 @@ The action panel is also the extension point: **config-defined action procs (§1
 
 ### 9.6 Result states
 
+> **Amendment (v0.6, gap-analysis #1 — supersedes the "No matches" bullet):** a
+> non-empty query that matches nothing now yields **one synthetic result row,
+> `Run: <query>`** (stock PC icon, subtitle "run as typed"), instead of a dead
+> "No results" state. Invoking it hands the raw query to
+> `annplat::run_split` — Run-box splitting in C: a quoted first token wins,
+> else the longest space-joined token prefix that exists on disk, else first
+> token + args — and executes through the ordinary `annplat::launch` path, so
+> the box doubles as a full Run-box replacement (`\\server\share`,
+> `ms-settings:…`, anything on PATH). The row carries no panel actions and is
+> inert unless invoked; there is deliberately **no option to disable it**.
+
 - **Empty query:** show top frecency results (most-used recent items) — a useful "what would I launch" default. Subject to the same per-bucket slot policy (§6.5) so the empty-query view isn't all apps.
 - **No matches:** a single muted "No results" row.
 - **Indexing in progress (cold start):** results stream in as the indexer reports via queued events. The cold-start state is shown as a **single muted footer line** (e.g. "Indexing…") rather than a progress widget — consistent with the one-fixed, minimal-chrome look; it neither blocks input nor adds an animated control. (We deliberately do **not** use a `ttk::progressbar` here; the footer text is enough to explain why results are still filling in.)

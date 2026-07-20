@@ -1397,7 +1397,20 @@ proc ann::rank {cands query} {
             set cands [linsert $cands 0 $item]
         }
     }
-    return [ann::bucketize $cands $::ann::result_max]
+    set out [ann::bucketize $cands $::ann::result_max]
+    # Zero-results fallback (docs/farr-gap-analysis.md #1): a non-empty query
+    # that matches nothing still offers exactly ONE row — "Run: <query>" — so
+    # the box doubles as the Run box (\\server\share, ms-settings:, anything on
+    # PATH). Inert unless invoked; no toggle, per the no-hedge-options rule.
+    if {![llength $out]} {
+        set rq [string trim $query]
+        if {$rq ne ""} {
+            return [list [dict create id "run:$rq" name "Run: $rq" path $rq \
+                kind run launch run target $rq score 0 \
+                iconspec stock:pc subtitle "run as typed"]]
+        }
+    }
+    return $out
 }
 
 # run the config-registered providers (§11.3) — bounded, isolated failures (§15.1).
@@ -1550,6 +1563,20 @@ proc ann::invoke_result {r} {
                 }
                 ann::hide
             }
+        }
+        run {
+            # the zero-results "Run:" row: split Run-box style in C (pure,
+            # tested), execute through the ordinary launch path
+            if {![ann::has annplat::run_split] || ![ann::has annplat::launch]} {
+                ann::status "launch unavailable" error ; return
+            }
+            lassign [annplat::run_split $path] rf ra
+            if {[catch {annplat::launch path $rf $ra} e]} {
+                ann::log ERROR "run '$path': $e"
+                ann::status "run failed: $e" error
+                return
+            }
+            ann::hide
         }
         default {
             if {![ann::has annplat::launch]} { ann::status "launch unavailable" error ; return }

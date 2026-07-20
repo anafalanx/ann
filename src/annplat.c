@@ -196,6 +196,73 @@ static int Plat_Launch(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[]
     return TCL_OK;
 }
 
+/* ------- Run-box style query splitting (gap-analysis #1) ---------------------
+ * annplat::run_split <raw> -> {file args}.  PURE (no execution), so it is fully
+ * testable; the caller hands the pieces to annplat::launch.  Splitting mirrors
+ * the Windows Run box: a leading double-quote delimits the file exactly; else
+ * the LONGEST space-joined token prefix that exists on disk wins (so
+ * `C:\Program Files\Foo\foo.exe -x` finds the spaced path without quotes);
+ * else first token = file, rest = args (ShellExecute then resolves PATH, App
+ * Paths, and URI schemes like ms-settings:).                                  */
+static int Plat_RunSplit(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[]) {
+    (void) cd;
+    if (objc != 2) { Tcl_WrongNumArgs(ip, 1, objv, "raw"); return TCL_ERROR; }
+    const char *raw = Tcl_GetString(objv[1]);
+    while (*raw == ' ' || *raw == '\t') raw++;
+    size_t len = strlen(raw);
+    while (len && (raw[len-1] == ' ' || raw[len-1] == '\t')) len--;
+    char *buf = Tcl_Alloc(len + 1);
+    memcpy(buf, raw, len);
+    buf[len] = 0;
+    Tcl_Obj *file = NULL, *args = NULL;
+    if (buf[0] == '"') {                        /* quoted first token wins */
+        char *end = strchr(buf + 1, '"');
+        if (end) {
+            const char *rest = end + 1;
+            while (*rest == ' ') rest++;
+            file = Tcl_NewStringObj(buf + 1, (int) (end - (buf + 1)));
+            args = Tcl_NewStringObj(rest, -1);
+        }
+    }
+    if (!file && len) {                         /* greedy longest-existing prefix */
+        size_t cut = len;
+        while (cut > 0) {
+            char saved = buf[cut];
+            buf[cut] = 0;
+            wchar_t *w = u8w(buf);
+            DWORD at = GetFileAttributesW(w);
+            Tcl_Free((char *) w);
+            buf[cut] = saved;
+            if (at != INVALID_FILE_ATTRIBUTES) {
+                const char *rest = buf + cut;
+                while (*rest == ' ') rest++;
+                file = Tcl_NewStringObj(buf, (int) cut);
+                args = Tcl_NewStringObj(rest, -1);
+                break;
+            }
+            while (cut > 0 && buf[cut-1] == ' ') cut--;   /* skip space run */
+            while (cut > 0 && buf[cut-1] != ' ') cut--;   /* skip the word  */
+            while (cut > 0 && buf[cut-1] == ' ') cut--;   /* end of prev word */
+        }
+    }
+    if (!file) {                                /* first token; ShellExecute resolves */
+        char *sp = strchr(buf, ' ');
+        if (sp) {
+            const char *rest = sp + 1;
+            while (*rest == ' ') rest++;
+            file = Tcl_NewStringObj(buf, (int) (sp - buf));
+            args = Tcl_NewStringObj(rest, -1);
+        } else {
+            file = Tcl_NewStringObj(buf, -1);
+            args = Tcl_NewStringObj("", 0);
+        }
+    }
+    Tcl_Free(buf);
+    Tcl_Obj *pair[2] = { file, args };
+    Tcl_SetObjResult(ip, Tcl_NewListObj(2, pair));
+    return TCL_OK;
+}
+
 /* ------- run-as-administrator (DESIGN §9.5/§15.2) ----------------------------
  * `runas` verb; a cancelled UAC prompt (ERROR_CANCELLED) is the NORMAL
  * "user declined" outcome -> returns "cancelled", never an error. */
@@ -622,6 +689,7 @@ int Annplat_Init(Tcl_Interp *ip) {
     Tcl_CreateObjCommand(ip, "::annplat::dwm_round",           Plat_DwmRound,         NULL, NULL);
     Tcl_CreateObjCommand(ip, "::annplat::thread_roundtrip",    Plat_ThreadRoundtrip,  NULL, NULL);
     Tcl_CreateObjCommand(ip, "::annplat::launch",              Plat_Launch,           NULL, NULL);
+    Tcl_CreateObjCommand(ip, "::annplat::run_split",           Plat_RunSplit,         NULL, NULL);
     Tcl_CreateObjCommand(ip, "::annplat::runas",               Plat_Runas,            NULL, NULL);
     Tcl_CreateObjCommand(ip, "::annplat::open_folder_select",  Plat_OpenFolderSelect, NULL, NULL);
     Tcl_CreateObjCommand(ip, "::annplat::windows",             Plat_Windows,          NULL, NULL);
