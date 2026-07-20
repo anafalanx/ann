@@ -67,6 +67,48 @@ test alias-1.1 {an exact alias pins its target above the fuzzy winner} -constrai
     set ::ann::aliases {} ; set ::ann::reader "" ; anndb::close $::db ; rclean
 }
 
+# ---- partial-alias recall (§6.7 amendment: query-time, honest score) ---------
+test alias-2.1 {a partial keyword recalls the target at an honest, unpinned score} -constraints hasext -setup {
+    rclean ; set ::db [anndb::open [rdb]] ; anndb::schema $::db ; seed $::db
+    set ::ann::reader $::db ; set ::ann::result_limit 9 ; set ::ann::aliases {}
+    ann::alias npx p_cal     ;# "np" is a PARTIAL match of keyword "npx"
+} -body {
+    set cal ""
+    foreach r [ann::rank [anndb::search $::db np 80] np] {
+        if {[dict get $r name] eq "Calculator"} { set cal $r }
+    }
+    # Calculator is recalled (partial keyword) at an HONEST score — present,
+    # but nowhere near the 1e9 exact-match pin: recall competes, it does not pin
+    list [expr {$cal ne ""}] [expr {$cal ne "" && [dict get $cal score] < 1e8}]
+} -result {1 1} -cleanup {
+    set ::ann::aliases {} ; set ::ann::reader "" ; anndb::close $::db ; rclean
+}
+test alias-2.2 {a typo'd keyword still recalls a literal-path target} -setup {
+    set ::ann::aliases {} ; set ::ann::reader ""
+    set ::alias_f [file join $::ANN_TMP recall-me.txt]
+    set fh [open $::alias_f w] ; puts -nonewline $fh x ; close $fh
+    ann::alias conf $::alias_f
+} -body {
+    set names [lmap r [ann::rank {} cnf] { dict get $r name }]
+    # "cnf" is a subsequence of keyword "conf" -> the file surfaces; and the
+    # Run fallback row is NOT added (there IS a result)
+    list [expr {"recall-me.txt" in $names}] [llength $names]
+} -result {1 1} -cleanup {
+    set ::ann::aliases {} ; catch {file delete -force $::alias_f}
+}
+test alias-2.3 {recall never duplicates a candidate already present; higher score wins} -setup {
+    set ::ann::aliases {} ; set ::ann::reader ""
+    set ::alias_f [file join $::ANN_TMP recall-dup.txt]
+    set fh [open $::alias_f w] ; puts -nonewline $fh x ; close $fh
+    ann::alias dup $::alias_f
+} -body {
+    set have [dict create id x name recall-dup.txt path $::alias_f kind file  launch path target {} score 500]
+    set out [ann::rank [list $have] du]
+    list [llength $out] [dict get [lindex $out 0] score]
+} -result {1 500} -cleanup {
+    set ::ann::aliases {} ; catch {file delete -force $::alias_f}
+}
+
 # ---- bucketing (§6.5 revised: commands -> executables -> files -> folders;
 # score decides within a bucket, no reserved slots) ----------------------------
 proc mkcands {nApps nWin nFile} {

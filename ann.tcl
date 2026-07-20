@@ -287,7 +287,22 @@ ann::option window_width        640          ;# popup width in px
 ann::option watched_roots [lmap p [ann::default_roots] { list $p 1 }]
 
 # ---- a keyword alias (§6.7): typing exactly "cfg" pins this file to the top --
+# (a partial or typo'd keyword also recalls the target, at its fuzzy score)
 ann::alias cfg [file join $ann::dir ann.config.tcl]
+
+# ---- a PARAMETERIZED alias (recipe): "<keyword> <args>" via a provider -------
+# The alias table handles bare keywords; for FARR-style parameterized shortcuts,
+# match the keyword prefix in a provider and template the remainder. ann ships
+# no search policy — this stays yours, in your config:
+# proc gh_search {query} {
+#     if {![string match "gh *" $query]} { return {} }
+#     set term [string trim [string range $query 3 end]]
+#     if {$term eq ""} { return {} }
+#     return [list [ann::result -id "gh:$term" -name "GitHub: $term" \
+#         -subtitle "search github.com" -kind app -icon stock:app \
+#         -launch [list ann::run open "https://github.com/search?q=$term"]]]
+# }
+# ann::provider gh gh_search
 
 # ---- a custom result provider (procs run per keystroke — keep them fast) -----
 # proc my_projects {query} {
@@ -1366,35 +1381,65 @@ proc ann::bucketize {cands limit} {
     return [lrange $out 0 [expr {$limit - 1}]]
 }
 
-# Apply the exact-alias top-pin (§6.7) then bucket. The C search already returns
-# candidates sorted by the fuzzy+frecency blend; an exact alias pins its target to
-# the top of its bucket regardless of fuzzy competition. A target may be a catalog
-# path, a plain file/folder path, or a command prefix (§11.4 shows all three).
+# Resolve an alias TARGET (§6.7/§11.4: a catalog path, a plain file/folder path,
+# or a command prefix) into one result row carrying the given score. Returns ""
+# when the target resolves to nothing. Shared by the exact top-pin (score 1e9)
+# and the partial-recall path (honest fuzzy score).
+proc ann::alias_item {kw target score} {
+    if {$::ann::reader ne "" && [ann::has anndb::get]} {
+        set item ""
+        catch { set item [anndb::get $::ann::reader $target] }
+        if {$item ne ""} {
+            dict set item score $score
+            return $item
+        }
+    }
+    if {[file exists $target]} {
+        # the whole target string is a real path (spaces included)
+        return [dict create id "alias:$kw" name [file tail $target] path $target \
+            kind [expr {[file isdirectory $target] ? "folder" : "file"}] \
+            launch path target $target score $score]
+    }
+    if {![catch {lindex $target 0} word0] && $word0 ne "" \
+            && [llength [info commands $word0]]} {
+        # a command prefix (one word or more) -> a tclproc result
+        return [dict create id "alias:$kw" name $kw path "alias:$kw" \
+            kind app launch tclproc target "alias" score $score script $target]
+    }
+    return ""
+}
+
+# Apply the alias legs of the HYBRID model (§6.7) then bucket. The C search
+# already returns candidates sorted by the fuzzy+frecency blend. An EXACT alias
+# match pins its target to the top of its bucket regardless of fuzzy competition;
+# a PARTIAL/typo'd match of a keyword recalls the target at its honest fuzzy
+# score, competing like any other candidate (no pin) — the §6.7 recall promise,
+# implemented query-time over the config-scale alias table (see the DESIGN §6.7
+# amendment: search_text folding would cross the single-writer boundary).
 proc ann::rank {cands query} {
     set nq [string tolower [string trim $query]]
     if {$nq ne "" && [dict exists $::ann::aliases $nq]} {
-        set target [dict get $::ann::aliases $nq]
-        set item ""
-        if {$::ann::reader ne "" && [ann::has anndb::get]} {
-            catch { set item [anndb::get $::ann::reader $target] }
-        }
-        if {$item eq "" && [file exists $target]} {
-            # the whole target string is a real path (spaces included); the pin
-            # score keeps it on top through the per-bucket sort (§6.7)
-            set item [dict create id "alias:$nq" name [file tail $target] path $target \
-                kind [expr {[file isdirectory $target] ? "folder" : "file"}] \
-                launch path target $target score 1e9]
-        }
-        if {$item eq "" && ![catch {lindex $target 0} word0] && $word0 ne "" \
-                && [llength [info commands $word0]]} {
-            # a command prefix (one word or more) -> a tclproc result
-            set item [dict create id "alias:$nq" name $nq path "alias:$nq" \
-                kind app launch tclproc target "alias" score 1e9 script $target]
-        }
+        set item [ann::alias_item $nq [dict get $::ann::aliases $nq] 1e9]
         if {$item ne ""} {
             set tpath [dict get $item path]
             set cands [lmap c $cands { if {[dict get $c path] eq $tpath} continue ; set c }]
             set cands [linsert $cands 0 $item]
+        }
+    } elseif {$nq ne ""} {
+        dict for {kw target} $::ann::aliases {
+            set s [ann::fuzzy $nq $kw]
+            if {$s <= 0} continue
+            set item [ann::alias_item $kw $target $s]
+            if {$item eq ""} continue
+            set tpath [dict get $item path]
+            set keep 1
+            set cands [lmap c $cands {
+                if {[dict get $c path] eq $tpath} {
+                    set cs [expr {[dict exists $c score] ? [dict get $c score] : 0}]
+                    if {$cs >= $s} { set keep 0 ; set c } else continue
+                } else { set c }
+            }]
+            if {$keep} { lappend cands $item }
         }
     }
     set out [ann::bucketize $cands $::ann::result_max]

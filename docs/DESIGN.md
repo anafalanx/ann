@@ -499,7 +499,18 @@ The locked matching decision is **hybrid**, with three legs that combine as foll
 2. **Keyword aliases** (registered via `ann::alias`, §11.3) are a **first-class routing mode**, not just extra text in the trigram blob. The behavior is explicit:
    - On every keystroke, after normalization, the query is checked against the registered alias table (stage [0.5] above).
    - **An *exact* alias match short-circuits fuzzy scoring for that target:** the aliased target is given a max fuzzy score and **pinned to the top of its source bucket** (an app alias pins to the top of the apps bucket, etc.). So typing the exact alias `cfg` always puts the config file first in its bucket, regardless of fuzzy competition.
-   - Alias text is *also* folded into `search_text` (so partial/typo'd alias input still surfaces the target through normal fuzzy matching), but only the *exact* alias match triggers the top-pin. This makes the alias leg observable rather than indistinguishable from substring matching.
+   - Partial/typo'd alias input *also* surfaces the target through normal fuzzy matching — but only the *exact* alias match triggers the top-pin. This makes the alias leg observable rather than indistinguishable from substring matching.
+     > **Amendment (v0.6, mechanism only — the observable behavior above is
+     > unchanged):** recall is implemented **query-time** — each keystroke
+     > fuzzy-scores the query against the registered keyword table and merges
+     > any hit's target into the candidates at that honest score (dedup keeps
+     > the higher-scored row; `ann::alias_item` resolves all three target
+     > forms for both legs). The original sketch ("fold alias text into
+     > `search_text`") is NOT how it works: `search_text` is written by the
+     > indexer thread under the single-writer rule, while aliases are
+     > config-owned and live on the GUI thread — folding would demand
+     > cross-thread catalog writes for cosmetic parity. A per-keystroke fuzzy
+     > pass over a config-scale alias table costs microseconds (§6.6).
 3. **Frecency** (§6.4) re-ranks *within* a bucket among comparable matches; it never overrides an exact-alias pin and never crosses bucket boundaries (fixed source priority, §6.5).
 
 This is what "HYBRID" means concretely: fuzzy handles discovery, exact aliases give deterministic shortcuts, frecency learns your habits — all under fixed source-priority bucketing.
