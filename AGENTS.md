@@ -5,6 +5,10 @@ that statically embeds **Tcl/Tk 9.0.4** (GUI + programmable config) and **SQLite
 (FTS5)** (catalog + search + frecency). The full product spec is
 [`docs/DESIGN.md`](docs/DESIGN.md) — treat it as authoritative for *what* to build
 and *how each subsystem must behave*. This file covers *how to work in the repo*.
+The feature roadmap is [`docs/farr-gap-analysis.md`](docs/farr-gap-analysis.md) —
+a vetted adopt/refuse comparison against FARR with a recommended order; read it
+before proposing new capabilities, and respect its refuse list (it restates the
+locked non-goals with the reasons).
 
 `ann` lives as a hosted project under `C:\dev\_ann` and builds against
 regular z runtime payloads under `..\r\` - see [`toolchain.md`](toolchain.md).
