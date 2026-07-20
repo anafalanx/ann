@@ -718,9 +718,13 @@ One fixed, polished look. No themes, no skins, no layout options.
 > `annplat::own_window` — owned toplevels get none, while keeping the normal
 > caption the in-icon menu needs; the tray is ann's presence); the look matches **els** (calm grey `#F2F2F2` page,
 > near-black ink, flat white fields with hairlines, ONE accent flourish — the
-> caret in ann's own green4 `#008B00` (els owns red `#DC322F`; one color for
-> ALL accent uses — its ~4.4:1 page contrast matches els red's class; errors
-> keep red as semantics) — `#D6E2F2` selection, Segoe UI chrome) instead of the
+> caret in **the suite's shared red `#DC322F`** (owner decision 2026-07-20,
+> **reversing** the earlier green4 `#008B00` choice: the tools now read as one
+> suite, same single accent everywhere; one color for ALL accent uses; errors
+> also read red — same hue, semantics carried by placement and wording, as in
+> els itself; the catalog LED's *idle* state moves to the semantic good-green
+> `#3C8A50`, since a red idle would collide with the LED's own red
+> priority-scan state) — `#D6E2F2` selection, Segoe UI chrome) instead of the
 > dark theme; the
 > result **list rows use a compact font** (name 8 pt / subtitle 5 pt — the panel
 > and dialogs keep 12/9); the list keeps the **first 50 results behind an x-row
@@ -729,9 +733,10 @@ One fixed, polished look. No themes, no skins, no layout options.
 > default layout, 12p arrows, els's greys, auto-hidden while everything fits;
 > wheel = 3 rows per notch, keyboard selection drags the window along); there
 > is a **real docked status bar** (els-style: hairline rule) carrying: a flat
-> tri-state **catalog LED** leftmost (green4 idle · els-red while the priority
-> scan runs · sober dark-yellow `#B8860B` while the throttled background walk
-> runs — fed by the indexer's live `phase` field in its stats), then the left
+> tri-state **catalog LED** leftmost (semantic good-green `#3C8A50` idle ·
+> red while the priority scan runs · sober dark-yellow `#B8860B` while the
+> throttled background walk runs — fed by the indexer's live `phase` field in
+> its stats), then the left
 > cell = transient message / **abbreviated catalog facts** ("A 97 · F 17,366 ·
 > 15:07 · cap · E2") whose full sentences live in **tooltips** (els's tip
 > machinery ported verbatim: 550 ms delay, dark tip, wrapping, window-clamped)

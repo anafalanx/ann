@@ -54,16 +54,19 @@ namespace eval ann {
 
     # One fixed look, matching els (its DESIGN palette): a calm grey page,
     # near-black ink, flat white fields with hairlines, ONE accent flourish, and
-    # a cool calm selection tint. ann's accent is GREEN4 #008B00 (owner
-    # decision; els owns red #DC322F) — chosen over the Solarized green #859900
-    # and chartreuse2 precisely because at ~4.4:1 on the page it matches els
-    # red's contrast class, so ONE color serves caret, icon teeth, update
-    # notice and hints alike (the els one-flourish discipline, no text shade
-    # split). Errors stay red: semantics, not branding.
+    # a cool calm selection tint. ann's accent is els RED #DC322F (owner
+    # decision 2026-07-20, REVERSING the earlier green4 #008B00 choice: the
+    # tools now read as one suite — the same single accent everywhere, same
+    # one-flourish discipline). ONE color serves caret, icon bit, update notice
+    # and hints alike. Errors also read red — same hue, semantics carried by
+    # placement and wording, exactly as in els (red caret + red errors coexist).
+    # The catalog LED's idle state moves to the semantic good-green (it is a
+    # status light, not a flourish; accent-red idle would collide with its own
+    # red priority-scan state).
     variable C
     array set C {
         bg "#F2F2F2"  panel "#FFFFFF"  ink "#1A1A1A"  muted "#767676"
-        accent "#008B00"  accentText "#008B00"  good "#3C8A50"  bad "#DC322F"
+        accent "#DC322F"  accentText "#DC322F"  good "#3C8A50"  bad "#DC322F"
         sel "#D6E2F2"  hair "#D9D9D9"  focus "#BFCFE3"
     }
 }
@@ -830,9 +833,11 @@ proc ann::build_statusbar {} {
     pack .status.sep -side top -fill x
     frame .status.in -bg $C(bg) -padx 12 -pady 4
     pack .status.in -fill x
-    # the catalog LED (flat, sober): green4 idle · els-red priority scan ·
-    # dark-yellow background walk — hover for words
-    label .status.in.led -bg $C(bg) -fg $C(accent) -font annStatus -text "●"
+    # the catalog LED (flat, sober): good-green idle · red priority scan ·
+    # dark-yellow background walk — hover for words. Idle is the SEMANTIC green,
+    # not the accent: with the accent now red, an accent-idle LED would be
+    # indistinguishable from its own priority-scan state.
+    label .status.in.led -bg $C(bg) -fg $C(good) -font annStatus -text "●"
     pack .status.in.led -side left -padx {0 7}
     ann::tooltip_for .status.in.led ann::led_tip
     label .status.in.info -bg $C(bg) -fg $C(muted) -anchor e -font annStatus -text ""
@@ -860,13 +865,15 @@ proc ann::led_phase {} {
 proc ann::led_update {} {
     variable C
     if {![winfo exists .status.in.led]} return
-    # 1 = priority scan: els red · 2 = background walk: sober yellow ·
-    # idle: ann green. (NO inline comments in the pattern list: Tcl parses
-    # them as patterns — they pair up silently and break `default`.)
+    # 1 = priority scan: red · 2 = background walk: sober yellow ·
+    # idle: the semantic good-green (NOT the accent — the accent is red now,
+    # and an accent-idle LED would collide with the priority-scan state).
+    # (NO inline comments in the pattern list: Tcl parses them as patterns —
+    # they pair up silently and break `default`.)
     switch -- [ann::led_phase] {
         1       { .status.in.led configure -fg "#DC322F" }
         2       { .status.in.led configure -fg "#B8860B" }
-        default { .status.in.led configure -fg $C(accent) }
+        default { .status.in.led configure -fg $C(good) }
     }
 }
 proc ann::led_tip {} {

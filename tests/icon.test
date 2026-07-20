@@ -237,7 +237,7 @@ test scroll-2.1 {the window width is IDENTICAL with and without the scrollbar} -
 test led-1.1 {LED color follows the indexer phase} -body {
     ann::build
     set out {}
-    foreach {ph want} [list 1 "#DC322F" 2 "#B8860B" 0 $::ann::C(accent)] {
+    foreach {ph want} [list 1 "#DC322F" 2 "#B8860B" 0 $::ann::C(good)] {
         set ::ann::last_stats [dict create phase $ph lnk_found 1 uwp_found 1 \
             files_found 1 files_prio 1 files_bulk 0 capped_prio 0 capped_bulk 0 \
             bulk_done 1 bulk_aborted 0 errors 0]

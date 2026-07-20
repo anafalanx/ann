@@ -5,7 +5,8 @@
 # "the awl on the editor's own page"): a light rounded tile in the app's page
 # grey with a hairline edge ring, an ink object built from a few primitives, a
 # steel-blue collar band, and exactly ONE accent at the business end — for ann
-# that is the key's bit (the part that opens things), in ann's chartreuse2.
+# that is the key's bit (the part that opens things), in the suite's shared
+# accent red (owner decision 2026-07-20; the bit was green before that).
 # ann is a keystroke launcher; the key is the object that opens everything else.
 #
 # Pure photo-image pixel math with signed-distance anti-aliasing: deterministic,
@@ -19,12 +20,12 @@
 package require Tk
 wm withdraw .
 
-# --- palette (ann.tcl's els-derived look; accent differentiates from els) -----
+# --- palette (ann.tcl's els-derived look; one shared suite accent) ------------
 set TILE   {242 242 242}   ;# #F2F2F2 the page (ann::C(bg), same as els::PAGE)
 set EDGE   {212 212 212}   ;# #D4D4D4 hairline ring so the tile reads on white
 set INK    {26 26 26}      ;# #1A1A1A bow + shaft
 set FERR   {150 170 198}   ;# #96AAC6 collar band (els's ferrule blue)
-set ACCENT {0 139 0}       ;# #008B00 green4 — the key's bit (els uses red)
+set ACCENT {220 50 47}     ;# #DC322F the suite red — the key's bit (was green4)
 set EDGEW  3               ;# edge-ring width in 256-scale px
 
 proc clamp {x lo hi} { expr {$x < $lo ? $lo : ($x > $hi ? $hi : $x)} }
