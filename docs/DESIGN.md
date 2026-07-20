@@ -43,7 +43,11 @@ These are **out of scope by design**. They will not be added; reintroducing them
 - **No number quick-pick** (you do not press `1`–`9` to choose a result) and **no vim-style navigation** (`j`/`k`). Navigation is arrows + Enter only.
 - **No relevance-blended single list.** Result composition is fixed source priority: apps → running windows → files.
 - **No cloud sync, no telemetry, no account.**
-- **No system-tray icon and no notification surface.** We do not use `tk systray`/`tk sysnotify` (§4.1). "Is it running / how do I quit it?" is answered inside the popup itself (§9.6, §10.2), not by a tray.
+- **No notification surface.** We do not use `tk sysnotify`. ann never toasts.
+  (**Reversed decision:** this bullet used to also reject a system-tray icon. ann
+  now *does* live in the tray — the tray icon is its presence, its click-to-open
+  affordance, and the host of its menu: Settings…, Rescan index, Quit. "Is it
+  running / how do I quit it?" is answered by the tray, not only inside the popup.)
 
 ---
 
@@ -177,7 +181,7 @@ The GUI thread obtains its id once at startup via `Tcl_GetCurrentThread()` and s
 | Storage / index | **SQLite** amalgamation with **FTS5** and **math functions** | Compiled into the EXE. |
 | Platform APIs | Win32: DWM, Shell, USER32 | `dwmapi`, `shell32`, `user32`, `ole32`, `shlwapi`. |
 
-Tcl/Tk 9.0 is the first stable major release of the line in ~27 years (9.0.0 shipped Oct 2024); 9.0.3 is the current patch release. Choosing 9.0 specifically buys us: **HiDPI scaling-aware widgets/themes**, **built-in SVG photo images** (for our own UI glyphs), and `image ... -withalpha`. We do **not** rely on `tk systray`/`tk sysnotify`/`tk print` — they exist but are out of scope. In particular, there is **no system-tray presence at all** (see §10.2): the launcher's liveness and quit affordance live inside the popup, not in a tray.
+Tcl/Tk 9.0 is the first stable major release of the line in ~27 years (9.0.0 shipped Oct 2024); 9.0.3 is the current patch release. Choosing 9.0 specifically buys us: **HiDPI scaling-aware widgets/themes**, **built-in SVG photo images** (for our own UI glyphs), and `image ... -withalpha`. We do **not** rely on `tk sysnotify`/`tk print` — they exist but are out of scope. ann *does* have a **system-tray presence**: the tray icon is the launcher's liveness indicator, a click-to-open affordance, and the host of its menu (Settings…, Rescan index, Quit). (§1 originally rejected a tray; that decision was reversed in implementation.)
 
 ### 4.2 The stubs mechanism — and why the host does not use it
 

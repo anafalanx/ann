@@ -748,11 +748,13 @@ static void do_scan_bulk(Writer *w, Stats *st, char *slow[], int nslow,
     }
     st->bulk_done = ok && !stop_requested();
     st->bulk_ms = (int)(GetTickCount() - t0);
-    if (st->bulk_done) {
-        meta_stamp(w, st, "last_bulk_scan_ts");
-        /* the long write burst can leave a huge WAL; fold it back now */
-        sqlite3_exec(w->db, "PRAGMA wal_checkpoint(TRUNCATE)", NULL, NULL, NULL);
-    }
+    if (st->bulk_done) meta_stamp(w, st, "last_bulk_scan_ts");
+    /* Fold the WAL back UNCONDITIONALLY.  The bulk phase writes inside a single
+       transaction, so the WAL necessarily grows to the whole write set; a scan
+       that was STOPPED or that errored consumed just as much of it as one that
+       finished.  Gating this on bulk_done stranded that WAL -- hundreds of MB --
+       until the next *successful* full scan happened to run. */
+    sqlite3_exec(w->db, "PRAGMA wal_checkpoint(TRUNCATE)", NULL, NULL, NULL);
 }
 
 /* the sync (test/tool) path: both phases, no notifies, no background mode */
