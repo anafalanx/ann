@@ -1,7 +1,7 @@
 # Agent Instructions
 
 `ann` is a minimal, keystroke-driven application launcher for Windows: a C23 host
-that statically embeds **Tcl/Tk 9.0.3** (GUI + programmable config) and **SQLite
+that statically embeds **Tcl/Tk 9.0.4** (GUI + programmable config) and **SQLite
 (FTS5)** (catalog + search + frecency). The full product spec is
 [`docs/DESIGN.md`](docs/DESIGN.md) — treat it as authoritative for *what* to build
 and *how each subsystem must behave*. This file covers *how to work in the repo*.
@@ -35,7 +35,7 @@ commands in [`z.json`](z.json).
 ## Read the Tcl/Tk 9 manual first
 
 The **complete Tcl 9 & Tk 9 manual** (Tcl + Tk commands, the C API, and
-`tclsh`/`wish`) ships as Markdown inside `..\r\tcltk\9.0.3\manual\` (`z x env` prints
+`tclsh`/`wish`) ships as Markdown inside `..\r\tcltk\9.0.4\manual\` (`z x env` prints
 the resolved Tcl/Tk payload path). It is the **authoritative reference** for this
 codebase — prefer it over training-data recall, which may be stale or describe
 Tcl 8.x behavior.
@@ -43,7 +43,7 @@ Tcl 8.x behavior.
 - **Before writing or changing any Tcl/Tk code — or the C that drives the
   embedded interpreter** (`Tcl_CreateObjCommand`, `Tcl_ThreadQueueEvent`,
   `Tk_PhotoPutBlock`, `TclZipfs_AppHook`, …) — **consult the manual.** Start at
-  `..\r\tcltk\9.0.3\manual\INDEX.md` and read the pages relevant to your change (each
+  `..\r\tcltk\9.0.4\manual\INDEX.md` and read the pages relevant to your change (each
   file is named after the command/function, e.g. `commands/wm.md`,
   `commands/ttk_entry.md`, `c-api/Tcl_CreateThread.md`).
 - Grep the tree to find the right page; open the few that matter.

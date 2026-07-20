@@ -53,7 +53,7 @@ save it any time; changes apply live (a broken config is rejected and the
 previous one stays active).
 
 The implementation is a small **C23 host** that statically embeds **Tcl/Tk
-9.0.3** (UI + config language) and **SQLite with FTS5** (catalog, search,
+9.0.4** (UI + config language) and **SQLite with FTS5** (catalog, search,
 frecency), built exclusively with MinGW-w64 (MSYS2 UCRT64). Architecture,
 threading model, and every locked decision: [`docs/DESIGN.md`](docs/DESIGN.md).
 
@@ -98,5 +98,5 @@ outer portable toolbox.
 
 ## About
 
-Built on **Tcl/Tk 9.0.3** and **SQLite 3.51** (FTS5). **v0.5**.
+Built on **Tcl/Tk 9.0.4** and **SQLite 3.51** (FTS5). **v0.5**.
 © 2026 Vincent Vercauteren. **MIT** licensed; see [`LICENSE`](LICENSE).

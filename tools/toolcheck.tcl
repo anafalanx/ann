@@ -44,8 +44,8 @@ proc discover_payload {root envs rel marker fallbacks missingPath label} {
 }
 
 set ROOT [script_root]
-lassign [discover_payload $ROOT {Z_TCLTK} {r tcltk 9.0.3} \
-    {tcl9 bin tclsh90.exe} [list] [file join $ROOT zmal r tcltk 9.0.3] tcltk] TC PIN
+lassign [discover_payload $ROOT {Z_TCLTK} {r tcltk 9.0.4} \
+    {tcl9 bin tclsh90.exe} [list] [file join $ROOT zmal r tcltk 9.0.4] tcltk] TC PIN
 lassign [discover_payload $ROOT {Z_MSYS2} {r msys2} \
     {ucrt64 bin gcc.exe} [list] [file join $ROOT zmal r msys2] msys2] MSYS2 MSYSPIN
 lassign [discover_payload $ROOT {Z_SQLITE} {r sqlite 3.51.0} \
@@ -78,14 +78,14 @@ if {[llength $pkgpaths]} {
 # Component manifest. kind: core (build/test/run) | opt. loc: tc, msys, sqlite,
 # twapi, or root (a project product). want: pinned version ("" = don't compare).
 set ::COMPONENTS {
-    {key tcl    name "Tcl/Tk 9 (shared)"   loc tc   probe {tcl9 bin tclsh90.exe}              kind core want 9.0.3}
+    {key tcl    name "Tcl/Tk 9 (shared)"   loc tc   probe {tcl9 bin tclsh90.exe}              kind core want 9.0.4}
     {key gcc    name "gcc / C23 (UCRT64)"  loc msys probe {ucrt64 bin gcc.exe}                kind core want 16.1.0}
-    {key tcls   name "Tcl/Tk 9 (static)"   loc tc   probe {tcl9s bin tclsh90s.exe}            kind core want 9.0.3}
+    {key tcls   name "Tcl/Tk 9 (static)"   loc tc   probe {tcl9s bin tclsh90s.exe}            kind core want 9.0.4}
     {key sqlsrc name "SQLite amalgamation" loc sqlite probe {sqlite3.c}                       kind core want 3.51.0}
     {key sqlite name "SQLite static lib"   loc root probe {build libsqlite3.a}                kind core want 3.51.0}
     {key twapi  name "twapi"               loc twapi probe {pkgIndex.tcl}                     kind core want 5.2.0}
     {key manual name "Tcl/Tk + C-API manual" loc tc probe {manual INDEX.md}                   kind opt  want {}}
-    {key tclsrc name "Tcl/Tk 9 source"     loc tc   probe {tclsrc tcl9.0.3 generic tcl.h}     kind opt  want {}}
+    {key tclsrc name "Tcl/Tk 9 source"     loc tc   probe {tclsrc tcl9.0.4 generic tcl.h}     kind opt  want {}}
 }
 
 proc comp_path {comp args} {

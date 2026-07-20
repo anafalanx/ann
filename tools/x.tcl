@@ -39,8 +39,8 @@ proc discover_payload {root envs rel marker fallbacks missingPath} {
 }
 
 set ROOT [script_root]
-set TC [discover_payload $ROOT {Z_TCLTK} {r tcltk 9.0.3} \
-    {tcl9 bin tclsh90.exe} [list] [file join $ROOT zmal r tcltk 9.0.3]]
+set TC [discover_payload $ROOT {Z_TCLTK} {r tcltk 9.0.4} \
+    {tcl9 bin tclsh90.exe} [list] [file join $ROOT zmal r tcltk 9.0.4]]
 set MSYS2 [discover_payload $ROOT {Z_MSYS2} {r msys2} \
     {ucrt64 bin gcc.exe} [list] [file join $ROOT zmal r msys2]]
 set SQLITE [discover_payload $ROOT {Z_SQLITE} {r sqlite 3.51.0} \
@@ -241,7 +241,7 @@ proc task_build-ext {args} {
         set init [string totitle $name]
         puts "cc  [file tail $src] -> build/$name.dll"
         # annicon drives Tk's photo C API -> needs the Tk stubs as well (the
-        # static tree's libtkstub.a; ABI-identical 9.0.3). Others are Tcl-only.
+        # static tree's libtkstub.a; ABI-identical 9.0.4). Others are Tcl-only.
         set tkflags {}
         if {$name eq "annicon"} {
             set tkflags [list -DUSE_TK_STUBS -L[TCp tcl9s lib] -ltkstub]

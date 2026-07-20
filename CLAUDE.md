@@ -4,7 +4,7 @@ The canonical instructions for this repo live in **[`AGENTS.md`](AGENTS.md)** â€
 read it first.
 
 Most important: the **full Tcl 9 & Tk 9 manual** (incl. the C-API) ships as
-Markdown inside `..\r\tcltk\9.0.3\manual\` (run `z x env` to print the resolved
+Markdown inside `..\r\tcltk\9.0.4\manual\` (run `z x env` to print the resolved
 runtime path; start at `manual/INDEX.md`). It is the authoritative Tcl/Tk
 reference for this codebase â€” before writing or changing Tcl/Tk code (or the C
 that drives the embedded interpreter), open the manual pages relevant to your

@@ -32,7 +32,7 @@ proc discover_tcltk {root} {
     if {[info exists ::env(Z_TCLTK)] && $::env(Z_TCLTK) ne ""} {
         lappend candidates $::env(Z_TCLTK)
     }
-    lappend candidates {*}[zmal_paths $root r tcltk 9.0.3]
+    lappend candidates {*}[zmal_paths $root r tcltk 9.0.4]
     foreach p $candidates {
         set p [file normalize $p]
         if {[file exists [file join $p tcl9 bin tclsh90.exe]]} { return $p }

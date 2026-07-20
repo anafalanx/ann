@@ -1,7 +1,7 @@
 # ann build environment
 
 How `ann` is built, tested, and kept portable with z-owned runtime payloads.
-`ann` is a C23 host that statically embeds Tcl/Tk 9.0.3 (GUI + programmable
+`ann` is a C23 host that statically embeds Tcl/Tk 9.0.4 (GUI + programmable
 config) and SQLite/FTS5 (catalog + search + frecency).
 
 ## Principle
@@ -16,10 +16,10 @@ Current z payloads:
 | Need | In z |
 |---|---|
 | MSYS2 UCRT64 gcc/binutils/windres | `..\r\msys2\` |
-| Tcl/Tk 9 shared + static builds | `..\r\tcltk\9.0.3\{tcl9,tcl9s}` |
-| Tcl/Tk script-library payload | `..\r\tcltk\9.0.3\tcllib\` |
-| Tcl/Tk 9 + C-API manual | `..\r\tcltk\9.0.3\manual\` |
-| Tcl/Tk source | `..\r\tcltk\9.0.3\tclsrc\` |
+| Tcl/Tk 9 shared + static builds | `..\r\tcltk\9.0.4\{tcl9,tcl9s}` |
+| Tcl/Tk script-library payload | `..\r\tcltk\9.0.4\tcllib\` |
+| Tcl/Tk 9 + C-API manual | `..\r\tcltk\9.0.4\manual\` |
+| Tcl/Tk source | `..\r\tcltk\9.0.4\tclsrc\` |
 | SQLite amalgamation sources | `..\r\sqlite\3.51.0\` |
 | twapi | `..\r\twapi\5.2.0\` |
 
@@ -64,7 +64,7 @@ produces lands inside `ann/`: compiled objects, `build/libsqlite3.a`, dev
 MSYS2's `ucrt64` may include Tcl/Tk 8.6 for its own packages. ann never uses it.
 Tooling invokes z's explicit Tcl/Tk 9 executables (`tclsh90`, `wish90`,
 `tclsh90s`, `wish90s`) and puts Tcl/Tk 9 ahead of MSYS2 on PATH. C builds pass
-`-I..\r\tcltk\9.0.3\tcl9\include` through the resolved path, never a bare
+`-I..\r\tcltk\9.0.4\tcl9\include` through the resolved path, never a bare
 system include.
 
 ## Common commands

@@ -10,7 +10,7 @@
 
 `ann` is a **minimal, blazing-fast, keystroke-driven application launcher for Windows**. You press a single global hotkey, a borderless search box appears centered on your active monitor, you type a few characters, the right result is at the top, you press Enter, it launches. That is the entire product.
 
-The implementation is a small **C23 host** that statically embeds **Tcl/Tk 9.0.3** for the GUI and **SQLite (with FTS5)** for the index. It is built **exclusively with MinGW-w64 — the MSYS2 UCRT64 toolchain (GCC ≥ 15)** — with no MSVC build, which lets the host use the full C23 feature set, including `#embed` to bake the default config, the FTS5 schema, and UI/icon assets into the EXE (see §4). The C layer owns the Windows integration (global hotkey, icon extraction, window enumeration, shell actions); Tcl owns the UI composition and is also the **fully programmable configuration surface**; SQLite owns the durable catalog, the search prefilter, and frecency learning.
+The implementation is a small **C23 host** that statically embeds **Tcl/Tk 9.0.4** for the GUI and **SQLite (with FTS5)** for the index. It is built **exclusively with MinGW-w64 — the MSYS2 UCRT64 toolchain (GCC ≥ 15)** — with no MSVC build, which lets the host use the full C23 feature set, including `#embed` to bake the default config, the FTS5 schema, and UI/icon assets into the EXE (see §4). The C layer owns the Windows integration (global hotkey, icon extraction, window enumeration, shell actions); Tcl owns the UI composition and is also the **fully programmable configuration surface**; SQLite owns the durable catalog, the search prefilter, and frecency learning.
 
 ### Design philosophy
 
@@ -94,7 +94,7 @@ These are **out of scope by design**. They will not be added; reintroducing them
    │  thread      │ Tcl_  │  │                                           │   │
    │ RegisterHot- │ Thread│  │  ┌─────────────┐    ┌──────────────────┐  │   │
    │ Key + Get-   │ Queue │  │  │ Embedded    │    │  C command procs │  │   │
-   │ Message loop │ Event │──┼─▶│ Tcl/Tk 9.0.3│◀──▶│ (ann::* in C)    │  │   │
+   │ Message loop │ Event │──┼─▶│ Tcl/Tk 9.0.4│◀──▶│ (ann::* in C)    │  │   │
    │ (own HWND)   │ +Alert│  │  │ interp+pump │    │  - search        │  │   │
    └──────────────┘       │  │  │ (owns Win32 │    │  - launch        │  │   │
                           │  │  │  msg pump)  │    │  - icon push     │  │   │
@@ -177,11 +177,11 @@ The GUI thread obtains its id once at startup via `Tcl_GetCurrentThread()` and s
 | Layer | Choice | Notes |
 |---|---|---|
 | Language | **C23** host + a thin Win32 platform layer | Built exclusively with MinGW-w64 (MSYS2 UCRT64, GCC ≥ 15, `-std=gnu23`), so the full C23 set — including `#embed` — is available. No MSVC build (§4.3). |
-| GUI toolkit | **Tcl/Tk 9.0.3** (released 2025-11-13), built **static** | Tk 9.0 *requires* Tcl 9.0 — the major versions are locked together; Tk 9.0 does not work with Tcl 8.6. |
+| GUI toolkit | **Tcl/Tk 9.0.4**, built **static** | Tk 9.0 *requires* Tcl 9.0 — the major versions are locked together; Tk 9.0 does not work with Tcl 8.6. |
 | Storage / index | **SQLite** amalgamation with **FTS5** and **math functions** | Compiled into the EXE. |
 | Platform APIs | Win32: DWM, Shell, USER32 | `dwmapi`, `shell32`, `user32`, `ole32`, `shlwapi`. |
 
-Tcl/Tk 9.0 is the first stable major release of the line in ~27 years (9.0.0 shipped Oct 2024); 9.0.3 is the current patch release. Choosing 9.0 specifically buys us: **HiDPI scaling-aware widgets/themes**, **built-in SVG photo images** (for our own UI glyphs), and `image ... -withalpha`. We do **not** rely on `tk sysnotify`/`tk print` — they exist but are out of scope. ann *does* have a **system-tray presence**: the tray icon is the launcher's liveness indicator, a click-to-open affordance, and the host of its menu (Settings…, Rescan index, Quit). (§1 originally rejected a tray; that decision was reversed in implementation.)
+Tcl/Tk 9.0 is the first stable major release of the line in ~27 years (9.0.0 shipped Oct 2024); 9.0.4 is the current patch release. Choosing 9.0 specifically buys us: **HiDPI scaling-aware widgets/themes**, **built-in SVG photo images** (for our own UI glyphs), and `image ... -withalpha`. We do **not** rely on `tk sysnotify`/`tk print` — they exist but are out of scope. ann *does* have a **system-tray presence**: the tray icon is the launcher's liveness indicator, a click-to-open affordance, and the host of its menu (Settings…, Rescan index, Quit). (§1 originally rejected a tray; that decision was reversed in implementation.)
 
 ### 4.2 The stubs mechanism — and why the host does not use it
 
@@ -211,18 +211,18 @@ Compile flags: **`-std=gnu23 -municode -D_WIN32_WINNT=0x0A00 -D__USE_MINGW_ANSI_
 
 > *Alternatives.* A pinned **WinLibs GCC 15+ (UCRT)** zip is the documented option for machines without MSYS2 (same `#embed`). **llvm-mingw** (Clang ≥ 19, UCRT target) is worth a second dev/CI lane: unlike GCC-MinGW it has working **AddressSanitizer / UBSan and Control Flow Guard** (`-mguard=cf`), which is valuable for this COM-heavy code. Never mix toolchains within one shipped EXE.
 
-**Build Tcl/Tk 9.0.3 static from source.** MSYS2 packages only Tcl/Tk **8.6** (DLL + stub libs), so a from-source static build is **mandatory** and should be a pinned, checked-in script. In the **UCRT64 shell**:
+**Build Tcl/Tk 9.0.4 static from source.** MSYS2 packages only Tcl/Tk **8.6** (DLL + stub libs), so a from-source static build is **mandatory** and should be a pinned, checked-in script. In the **UCRT64 shell**:
 
 ```
 # Tcl first
-cd tcl9.0.3/win && ./configure --disable-shared --enable-64bit && mingw32-make && mingw32-make install
+cd tcl9.0.4/win && ./configure --disable-shared --enable-64bit && mingw32-make && mingw32-make install
 # then Tk, against that Tcl
-cd tk9.0.3/win  && ./configure --disable-shared --enable-64bit --with-tcl=<tcl-build-dir> && mingw32-make && mingw32-make install
+cd tk9.0.4/win  && ./configure --disable-shared --enable-64bit --with-tcl=<tcl-build-dir> && mingw32-make && mingw32-make install
 ```
 
 Do **not** pass `--enable-threads` (threading is unconditional in 9.0); use `--enable-symbols` only for debug. Build **SQLite** (amalgamation, `SQLITE_ENABLE_FTS5` + `SQLITE_ENABLE_MATH_FUNCTIONS`) and **zlib** in the *same* UCRT64 environment so every object shares one CRT.
 
-> **There is no `staticpkg` token under MinGW.** `nmake -f Makefile.vc … OPTS=static,staticpkg,msvcrt` is an **MSVC-only** recipe — there is no `nmake`, no `Makefile.vc`, and no `staticpkg` flag in the MinGW build. The MinGW way to embed the script library is **Tcl 9 zipfs**: the `--disable-shared` build appends `libtcl9.0.3.zip` / `libtk9.0.3.zip` to the binary, and at runtime **`TclZipfs_AppHook` mounts that appended zip** and sets `tcl_library`/`tk_library` (§4.2). Linking the `.a` *without* the appended zip + AppHook makes `Tk_Init` fail to find `init.tcl` — embedding is **not** automatic. (Our own assets are already baked into the C objects via `#embed`; a `zipfs mkimg` pass is only needed if we'd rather ship them inside the same zip.) The host must **not** define `USE_TCL_STUBS` or link `tclstub`/`tkstub` — MSYS2's *only* static `.a` are the stub libs, which is the opposite of a static-embed build (§4.2).
+> **There is no `staticpkg` token under MinGW.** `nmake -f Makefile.vc … OPTS=static,staticpkg,msvcrt` is an **MSVC-only** recipe — there is no `nmake`, no `Makefile.vc`, and no `staticpkg` flag in the MinGW build. The MinGW way to embed the script library is **Tcl 9 zipfs**: the `--disable-shared` build appends `libtcl9.0.4.zip` / `libtk9.0.4.zip` to the binary, and at runtime **`TclZipfs_AppHook` mounts that appended zip** and sets `tcl_library`/`tk_library` (§4.2). Linking the `.a` *without* the appended zip + AppHook makes `Tk_Init` fail to find `init.tcl` — embedding is **not** automatic. (Our own assets are already baked into the C objects via `#embed`; a `zipfs mkimg` pass is only needed if we'd rather ship them inside the same zip.) The host must **not** define `USE_TCL_STUBS` or link `tclstub`/`tkstub` — MSYS2's *only* static `.a` are the stub libs, which is the opposite of a static-embed build (§4.2).
 
 **Link recipe (GNU ld — order matters):** static archives with **Tk before Tcl**, the Windows import libs *after* the archives, and **`-static`** to fold in libgcc/libstdc++/**libwinpthread** *and* the CRT (`-static-libgcc`/`-static-libstdc++` alone do **not** cover `libwinpthread`):
 
@@ -1038,7 +1038,7 @@ Keypirinha is the closest model: a fast C++ core with a **Python** plugin/config
 | Aspect | Keypirinha | **ann** |
 |---|---|---|
 | Core | C++ | **C23** |
-| Script layer | **Python** (CPython embedded) | **Tcl/Tk 9.0.3 (static)** |
+| Script layer | **Python** (CPython embedded) | **Tcl/Tk 9.0.4 (static)** |
 | Extension unit | Installable **packages/plugins** (a `Plugin` subclass) | **Procs in your own config** — no package unit |
 | Third-party distribution | Package files you install | **None** — you copy snippets into your config |
 | GUI | Custom | Tk widgets composed in the same script language |
@@ -1056,7 +1056,7 @@ Everything lives in **one folder**; no installer, no registry writes, runs from 
 
 ```
 ann/
-├─ ann.exe                 # the C23 host with Tcl/Tk 9.0.3 + SQLite statically linked
+├─ ann.exe                 # the C23 host with Tcl/Tk 9.0.4 + SQLite statically linked
 ├─ ann.config.tcl          # the Tcl config (created from a default on first run)
 ├─ ann.db                  # SQLite database (catalog, usage, frecency, FTS); WAL
 ├─ ann.db-wal              # WAL file (created at runtime)
@@ -1158,7 +1158,7 @@ Shutdown, restart, and "empty recycle bin" are the **destructive system commands
 A phased roadmap from skeleton to v1. Each milestone ends with the relevant verification check.
 
 **M0 — Stack proof (the riskiest bits first).**
-- Static-build Tcl/Tk 9.0.3 (MinGW/UCRT64, `./configure --disable-shared`; zipfs library zip + `TclZipfs_AppHook`, §4.3) + SQLite (FTS5 + math) into the C23 host, one UCRT model, `-static`.
+- Static-build Tcl/Tk 9.0.4 (MinGW/UCRT64, `./configure --disable-shared`; zipfs library zip + `TclZipfs_AppHook`, §4.3) + SQLite (FTS5 + math) into the C23 host, one UCRT model, `-static`.
 - Verify: `tcl.h`/`tk.h` compile under `-std=gnu23` and a one-line `#if __has_embed` test passes on the pinned GCC; **`TclZipfs_AppHook` + `Tk_Init` return `TCL_OK` with no external lib dir**; a worker thread `Tcl_ThreadQueueEvent` round-trips to the GUI thread.
 - A bare borderless `overrideredirect` + `-topmost` window appears, centered on the active monitor, and **gets keyboard focus** (`focus -force` + `SetForegroundWindow`).
 
