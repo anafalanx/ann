@@ -778,6 +778,14 @@ This is a genuine Tk-on-Windows limitation that the design confronts directly:
 - **Input box on top:** a single `ttk::entry` styled to match. Optional `-placeholder` ("Search…") via Tk 9.0's entry placeholder support.
 - **Vertical results list with icons:** each row is `[icon] [display name] [secondary line: path/type]`. The **selected row** is highlighted.
 - **Keyboard navigation:** **Up/Down arrows** move the selection; **Enter** launches the selected (default action); **Esc** hides the popup. **No number quick-pick. No vim keys.** (Locked.)
+  > **Amendment (v0.6, gap-analysis #3):** **Ctrl+Up / Ctrl+Down** recall
+  > **typed-query history** — the MRU of what was typed at each invoke (distinct
+  > from launch history, which the empty view shows). Ctrl+Up walks back,
+  > Ctrl+Down forward to the saved live input; any edit returns to live typing;
+  > every popup shows in live mode. Persisted next to the config as
+  > `ann.history` (one query per line, newest first, cap 50, atomic
+  > temp-and-rename, best-effort — history must never break a launch). No new
+  > chrome: the entry itself is the whole UI.
 - **Virtualized list:** only visible rows hold live Tk photo images (§9.7). Scrolling reuses row widgets.
 
 ### 9.5 The action panel (Raycast-style)

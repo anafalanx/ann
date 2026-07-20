@@ -25,6 +25,10 @@ namespace eval ann {
     variable sel 0                     ;# selected result index
     variable last_query " "       ;# last queried text (sentinel != "")
     variable query_after ""            ;# keystroke debounce token
+    variable hist {}              ;# typed-query MRU, newest first (gap-analysis #3)
+    variable hist_idx -1          ;# recall cursor into hist; -1 = live editing
+    variable hist_live ""         ;# the in-progress text saved when recall begins
+    variable HIST_MAX 50          ;# MRU cap (file + memory)
     variable result_limit 9            ;# rows in the VIEWPORT (DESIGN §11.4)
     variable result_max 50             ;# results kept in the scrollable list
     variable view_offset 0             ;# results index of the first visible row
@@ -728,6 +732,8 @@ proc ann::build {} {
     bind .c.q <KeyRelease> { ann::on_query }
     bind .c.q <Down>      { ann::key_nav down ; break }
     bind .c.q <Up>        { ann::key_nav up ; break }
+    bind .c.q <Control-Up>   { ann::hist_prev ; break }
+    bind .c.q <Control-Down> { ann::hist_next ; break }
     bind .c.q <Return>    { ann::key_nav enter ; break }
     bind .c.q <Escape>    { ann::key_nav escape ; break }
     bind .c.q <Tab>       { ann::key_nav tab ; break }
@@ -1289,6 +1295,7 @@ proc ann::show {} {
     # Build the fresh content BEFORE mapping, so the previous session's query and
     # results never flash (spotlight-style: each invocation starts clean).
     .c.q delete 0 end
+    set ::ann::hist_idx -1     ;# each invocation starts in live input, not recall
     set ::ann::last_query " "
     ann::do_query
     ann::position
@@ -1329,8 +1336,65 @@ proc ann::on_query {} {
     set q [.c.q get]
     if {$q eq $last_query} return        ;# arrows/Enter don't change text -> no requery
     set last_query $q
+    set ::ann::hist_idx -1               ;# a real edit ends any history recall
     if {$query_after ne ""} { catch {after cancel $query_after} }
     set query_after [after 15 ann::do_query]   ;# DESIGN §6.6 debounce ~10-20ms
+}
+
+# ---- typed-query history (gap-analysis #3): flat MRU file, zero chrome -------
+# Recall of what you TYPED (distinct from launch history, which the empty view
+# shows): Ctrl+Up walks back, Ctrl+Down forward, any edit returns to live input.
+# Pushed on every invoke with a non-empty query; persisted next to the config as
+# ann.history, one query per line, newest first, atomically (temp + rename, the
+# managed-block pattern) and best-effort — history must never break a launch.
+proc ann::history_path {} { return [file join $::ann::dir ann.history] }
+proc ann::hist_load {} {
+    set ::ann::hist {}
+    catch {
+        set fh [open [ann::history_path] r]
+        fconfigure $fh -encoding utf-8
+        set lines [split [string trim [read $fh]] \n]
+        close $fh
+        set ::ann::hist [lrange $lines 0 [expr {$::ann::HIST_MAX - 1}]]
+    }
+}
+proc ann::hist_save {} {
+    catch {
+        set path [ann::history_path]
+        set tmp "$path.tmp[pid]"
+        set fh [open $tmp w]
+        fconfigure $fh -encoding utf-8 -translation lf
+        puts -nonewline $fh [join $::ann::hist \n]
+        close $fh
+        file rename -force $tmp $path
+    }
+}
+proc ann::hist_push {q} {
+    set q [string trim $q]
+    if {$q eq ""} return
+    set rest [lsearch -exact -all -inline -not $::ann::hist $q]
+    set ::ann::hist [lrange [linsert $rest 0 $q] 0 [expr {$::ann::HIST_MAX - 1}]]
+    ann::hist_save
+}
+proc ann::hist_apply {text} {
+    .c.q delete 0 end
+    .c.q insert 0 $text
+    .c.q icursor end
+    set ::ann::last_query $text   ;# on_query's no-change guard: no reset, no requery
+    ann::do_query
+}
+proc ann::hist_prev {} {
+    variable hist ; variable hist_idx
+    if {$hist_idx + 1 >= [llength $hist]} return
+    if {$hist_idx == -1} { set ::ann::hist_live [.c.q get] }
+    incr hist_idx
+    ann::hist_apply [lindex $hist $hist_idx]
+}
+proc ann::hist_next {} {
+    variable hist ; variable hist_idx
+    if {$hist_idx == -1} return
+    incr hist_idx -1
+    ann::hist_apply [expr {$hist_idx == -1 ? $::ann::hist_live : [lindex $hist $hist_idx]}]
 }
 
 # Source-priority bucketing with reserved slots (DESIGN §6.5): apps -> running
@@ -1575,6 +1639,9 @@ proc ann::launch_selected {} {
 }
 
 proc ann::invoke_result {r} {
+    # typed-query history (gap-analysis #3): whatever was typed to reach this
+    # invoke is worth recalling, whether or not the launch itself succeeds
+    if {[winfo exists .c.q]} { ann::hist_push [.c.q get] }
     set launch [dict get $r launch]
     set path   [dict get $r path]
     ann::log INFO "invoke '[dict get $r name]' ($launch -> $path)"
@@ -2271,6 +2338,7 @@ proc ann::main {} {
     }
     ann::build
     ann::load_config           ;# first run writes the template; sets roots/tuning
+    ann::hist_load             ;# typed-query MRU (gap-analysis #3)
     ann::start_indexer         ;# scans with the configured roots; watches config
     ann::apply_hotkey          ;# no-op if the config already registered it
     ann::tray_setup            ;# resident presence: click = open, right-click = menu

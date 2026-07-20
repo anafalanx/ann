@@ -1,0 +1,93 @@
+# tests/history.test — typed-query history (gap-analysis #3): the MRU push/dedupe/
+# cap logic, the flat-file round-trip, Ctrl+Up/Down recall, and the edit reset.
+
+package require tcltest
+namespace import ::tcltest::*
+
+proc hist_reset {} {
+    set ::ann::hist {} ; set ::ann::hist_idx -1 ; set ::ann::hist_live ""
+    set ::__hist_dir $::ann::dir
+    set ::ann::dir $::ANN_TMP
+    catch {file delete -force [ann::history_path]}
+}
+proc hist_restore {} {
+    catch {file delete -force [ann::history_path]}
+    set ::ann::dir $::__hist_dir
+    set ::ann::hist {} ; set ::ann::hist_idx -1 ; set ::ann::hist_live ""
+    # the els lesson (helpers.tcl:204 there): a pending debounced do_query from
+    # on_query/hist_apply outlives the test and clobbers a LATER file's
+    # ::ann::results mid-assertion — cancel it and restore a quiet baseline
+    catch {after cancel $::ann::query_after} ; set ::ann::query_after ""
+    catch {.c.q delete 0 end}
+    set ::ann::last_query " "
+    set ::ann::results {} ; set ::ann::sel 0
+    catch {ann::render_results}
+}
+
+test hist-1.1 {push is MRU with dedupe-to-front} -setup {hist_reset} -body {
+    ann::hist_push alpha ; ann::hist_push beta ; ann::hist_push alpha
+    set ::ann::hist
+} -result {alpha beta} -cleanup {hist_restore}
+
+test hist-1.2 {empty and whitespace queries are never pushed} -setup {hist_reset} -body {
+    ann::hist_push "" ; ann::hist_push "   "
+    llength $::ann::hist
+} -result 0 -cleanup {hist_restore}
+
+test hist-1.3 {the MRU is capped at HIST_MAX} -setup {hist_reset} -body {
+    for {set i 0} {$i < 60} {incr i} { ann::hist_push q$i }
+    list [llength $::ann::hist] [lindex $::ann::hist 0]
+} -result {50 q59} -cleanup {hist_restore}
+
+test hist-1.4 {the file round-trips: push, forget, load} -setup {hist_reset} -body {
+    ann::hist_push one ; ann::hist_push "two words"
+    set ::ann::hist {}
+    ann::hist_load
+    set ::ann::hist
+} -result {{two words} one} -cleanup {hist_restore}
+
+test hist-1.5 {a missing file loads as empty, silently} -setup {hist_reset} -body {
+    ann::hist_load
+    set ::ann::hist
+} -result {} -cleanup {hist_restore}
+
+# ---- recall into the real entry ----------------------------------------------
+test hist-2.1 {Ctrl+Up walks back; Ctrl+Down returns to the live text} -setup {
+    hist_reset ; ann::build
+    set ::ann::hist {newest older}
+} -body {
+    .c.q delete 0 end ; .c.q insert 0 draft
+    ann::hist_prev            ;# -> newest
+    set a [.c.q get]
+    ann::hist_prev            ;# -> older
+    set b [.c.q get]
+    ann::hist_prev            ;# at the end: stays
+    set c [.c.q get]
+    ann::hist_next            ;# -> newest
+    set d [.c.q get]
+    ann::hist_next            ;# -> back to the live draft
+    set e [.c.q get]
+    list $a $b $c $d $e $::ann::hist_idx
+} -result {newest older older newest draft -1} -cleanup {hist_restore}
+
+test hist-2.2 {an edit ends recall: on_query resets the cursor} -setup {
+    hist_reset ; ann::build
+    set ::ann::hist {something}
+} -body {
+    .c.q delete 0 end
+    ann::hist_prev
+    set during $::ann::hist_idx
+    .c.q delete 0 end ; .c.q insert 0 edited
+    ann::on_query             ;# the KeyRelease path a real edit takes
+    list $during $::ann::hist_idx
+} -result {0 -1} -cleanup {hist_restore}
+
+test hist-2.3 {invoke pushes the typed query} -setup {
+    hist_reset ; ann::build
+} -body {
+    .c.q delete 0 end ; .c.q insert 0 "my launch"
+    # a tclproc row with no script: invoke_result runs its push then no-ops
+    ann::invoke_result [dict create id t name T path t kind app launch tclproc \
+        target {} score 1]
+    set ::ann::hist
+} -result {{my launch}} -cleanup {hist_restore}
