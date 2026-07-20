@@ -1,0 +1,151 @@
+# tests/ignore.test — ignore globs + "Hide from results" (gap-analysis #5).
+# Tcl half: the option knobs, the union/idempotence of apply_ignores, the hide
+# action's gating and instant removal, and the managed-block persistence.
+# C half (hasindex): globs are enforced at index time and hides survive a rescan
+# (the ON CONFLICT enabled=1 trap) via purge_ignored + the upsert gate.
+
+package require tcltest
+namespace import ::tcltest::*
+
+proc ig_reset {} {
+    set ::ann::ignore_globs {} ; set ::ann::hidden {}
+    set ::ann::ignores_applied "￿"
+    # record what apply_ignores pushes to the indexer, without a real indexer
+    set ::ig_pushed {} ; set ::ig_calls 0
+    rename ::annindex::set_ignores ::ig_saved_set_ignores
+    proc ::annindex::set_ignores {globs} { set ::ig_pushed $globs ; incr ::ig_calls }
+}
+proc ig_restore {} {
+    catch {rename ::annindex::set_ignores {}}
+    catch {rename ::ig_saved_set_ignores ::annindex::set_ignores}
+    set ::ann::ignore_globs {} ; set ::ann::hidden {}
+    set ::ann::ignores_applied "￿"
+}
+
+# ---- the option knobs + the union ---------------------------------------------
+test ig-1.1 {ann::option ignore_globs stores the list and pushes it} \
+        -setup {ig_reset} -cleanup {ig_restore} -body {
+    ann::apply_option ignore_globs {*.tmp *.bak}
+    list $::ann::ignore_globs [lsort $::ig_pushed]
+} -result {{*.tmp *.bak} {*.bak *.tmp}}
+
+test ig-1.2 {ignore_globs and hidden are UNION'd, sorted-unique} \
+        -setup {ig_reset} -cleanup {ig_restore} -body {
+    ann::apply_option ignore_globs {*.tmp}
+    ann::apply_option ignore_hidden {*.log *.tmp}          ;# *.tmp is shared -> deduped
+    set ::ig_pushed
+} -result {*.log *.tmp}
+
+test ig-1.3 {apply_ignores is idempotent: an unchanged union pushes nothing new} \
+        -setup {ig_reset} -cleanup {ig_restore} -body {
+    ann::apply_option ignore_globs {*.tmp}
+    set a $::ig_calls
+    ann::apply_ignores ; ann::apply_ignores       ;# same union
+    list $a $::ig_calls
+} -result {1 1}
+
+test ig-1.4 {a non-list value is rejected without changing state} \
+        -setup {ig_reset} -cleanup {ig_restore} -body {
+    ann::apply_option ignore_globs {*.tmp}
+    ann::apply_option ignore_globs "\{unbalanced"    ;# not a valid list
+    set ::ann::ignore_globs
+} -result {*.tmp}
+
+# ---- the Hide action ----------------------------------------------------------
+test ig-2.1 {hide_item appends to hidden, unions, and dedupes} \
+        -setup {ig_reset} -cleanup {ig_restore} -body {
+    set ::ann::hotkey Alt+Space ; set ::ann::result_limit 9
+    ann::hide_item {C:\junk\a.exe}
+    ann::hide_item {C:\junk\a.exe}                    ;# again: no dup
+    list $::ann::hidden [lsort $::ig_pushed]
+} -result {{{C:\junk\a.exe}} {{C:\junk\a.exe}}}
+
+test ig-2.2 {act_hide removes every row with that path and fixes the selection} \
+        -setup {ig_reset ; ann::build} -cleanup {ig_restore ; set ::ann::results {}} -body {
+    set ::ann::hotkey Alt+Space ; set ::ann::result_limit 9
+    set ::ann::results [list \
+        [dict create id f1 name a path {C:\a.exe} kind app] \
+        [dict create id f2 name b path {C:\b.exe} kind app] \
+        [dict create id f3 name c path {C:\a.exe} kind file]]
+    set ::ann::sel 2
+    ann::act_hide [lindex $::ann::results 0]           ;# hides C:\a.exe (rows 0 AND 2)
+    list [llength $::ann::results] [dict get [lindex $::ann::results 0] path] $::ann::sel
+} -result {1 {C:\b.exe} 0}
+
+test ig-2.3 {the Run row, an alias pin, a path row, and a window are NOT hideable} \
+        -setup {ig_reset} -cleanup {ig_restore} -body {
+    set out {}
+    foreach r [list \
+            [dict create id run:foo   name X path foo    kind run    target {}] \
+            [dict create id alias:cfg name X path bar    kind file   target {}] \
+            [dict create id path:c    name X path {C:\c} kind folder target {}] \
+            [dict create id w1        name X path 123    kind window target {}]] {
+        set acts [ann::actions_for $r]
+        lappend out [expr {"Hide from results" in [lmap a $acts {dict get $a label}]}]
+    }
+    set out
+} -result {0 0 0 0}
+
+test ig-2.4 {a real file result DOES offer Hide from results} \
+        -setup {ig_reset} -cleanup {ig_restore} -body {
+    set acts [ann::actions_for [dict create id f9 name doc path {C:\doc.txt} \
+        kind file target {C:\doc.txt}]]
+    expr {"Hide from results" in [lmap a $acts {dict get $a label}]}
+} -result 1
+
+# ---- managed-block persistence ------------------------------------------------
+# config_path is `file join $::ann::dir ann.config.tcl`, so redirect it by pointing
+# dir at a temp folder — no proc surgery, nothing to clobber for later files.
+proc ann::_slurp {p} { set f [open $p r] ; set s [read $f] ; close $f ; return $s }
+test ig-3.1 {settings_save emits ignore_hidden only when there are hides} \
+        -setup {ig_reset ; set ::__ig_dir $::ann::dir} \
+        -cleanup {ig_restore ; set ::ann::dir $::__ig_dir} -body {
+    set ::ann::dir [file join $::ANN_TMP igcfgdir]
+    file mkdir $::ann::dir
+    catch {file delete -force [ann::config_path]}
+    ann::settings_save {} Alt+Space 9                  ;# no hides
+    set none [regexp {ignore_hidden} [ann::_slurp [ann::config_path]]]
+    set ::ann::hidden {{C:\x\y.exe}}
+    ann::settings_save {} Alt+Space 9                  ;# with a hide
+    set some [regexp {ignore_hidden} [ann::_slurp [ann::config_path]]]
+    list $none $some
+} -result {0 1}
+
+# ---- C enforcement (index-time) -----------------------------------------------
+# local db helpers (ignore.test sorts before index.test, so its ixdb/ixclean
+# aren't defined yet)
+proc igdb {} { return [file join $::ANN_TMP ig[pid].db] }
+proc igclean {} { foreach s {{} -wal -shm} { catch {file delete -force [igdb]$s} } }
+test ig-4.1 {ignore globs exclude at scan time and a hide survives a re-scan} \
+        -constraints hasindex -setup {igclean} -cleanup {
+    catch {annindex::set_ignores {}}
+    foreach f {igkeepfile.txt igdropfile.txt} { catch {file delete -force [file join $::ANN_FSROOT $f]} }
+    igclean
+} -body {
+    # both are .txt (an indexed extension); the glob discriminates by NAME so the
+    # allow_ext gate doesn't confound the test
+    set keep [file join $::ANN_FSROOT igkeepfile.txt]
+    set drop [file join $::ANN_FSROOT igdropfile.txt]
+    foreach f [list $keep $drop] { set fh [open $f w] ; puts -nonewline $fh x ; close $fh }
+    # scan #1: no ignores -> both present
+    annindex::set_ignores {}
+    annindex::scan [igdb]
+    set rd [anndb::open [igdb] -readonly]
+    set keep0 [expr {[llength [anndb::search $rd igkeepfile 50]] > 0}]
+    set drop0 [expr {[llength [anndb::search $rd igdropfile 50]] > 0}]
+    anndb::close $rd
+    # scan #2: ignore *igdrop* -> gone; keep stays
+    annindex::set_ignores {*igdrop*}
+    annindex::scan [igdb]
+    set rd [anndb::open [igdb] -readonly]
+    set drop1 [expr {[llength [anndb::search $rd igdropfile 50]] > 0}]
+    set keep1 [expr {[llength [anndb::search $rd igkeepfile 50]] > 0}]
+    anndb::close $rd
+    # scan #3: also hide keep by exact path -> purged despite being indexed
+    annindex::set_ignores [list *igdrop* [string map {/ \\} $keep]]
+    annindex::scan [igdb]
+    set rd [anndb::open [igdb] -readonly]
+    set keep2 [expr {[llength [anndb::search $rd igkeepfile 50]] > 0}]
+    anndb::close $rd
+    list $keep0 $drop0 $drop1 $keep1 $keep2
+} -result {1 1 0 1 0}

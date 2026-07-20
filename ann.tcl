@@ -42,6 +42,9 @@ namespace eval ann {
     variable indexing 1                ;# cold-start until the first catalog update
     variable aliases {}                ;# normalized-keyword -> catalog path (§6.7, §11.3)
     variable confirm_destructive 1     ;# inline confirm for shutdown/restart/empty-bin (§15.4)
+    variable ignore_globs {}           ;# user knob: ann::option ignore_globs {...} (gap-analysis #5)
+    variable hidden {}                 ;# managed: paths hidden via the action panel (persisted in the managed block)
+    variable ignores_applied "￿" ;# last {globs∪hidden} pushed to the indexer (sentinel: never a real value, so the first apply always fires)
 
     # M5: live running-windows provider (enumerated, never persisted — §7.3)
     variable win_cache {}              ;# last EnumWindows snapshot
@@ -293,6 +296,13 @@ ann::option window_width        640          ;# popup width in px
 # this via its managed block at the end of the file.)
 ann::option watched_roots [lmap p [ann::default_roots] { list $p 1 }]
 
+# Ignore globs (gap-analysis #5): paths matching any of these are never indexed.
+# `*` spans anything including \ (so a bare name matches at any depth), `?` is one
+# char; case-insensitive; / and \ both work. Enforced at index time, so search
+# pays nothing. (The "Hide from results" panel action maintains its own list in
+# the managed block below — this is your hand-written half.)
+# ann::option ignore_globs {*/node_modules/* *.tmp *.bak *~}
+
 # ---- a keyword alias (§6.7): typing exactly "cfg" pins this file to the top --
 # (a partial or typo'd keyword also recalls the target, at its fuzzy score)
 ann::alias cfg [file join $ann::dir ann.config.tcl]
@@ -399,6 +409,24 @@ proc ann::apply_option {opt value} {
                 ann::log WARN "confirm_destructive '$value' is not a boolean, ignored" ; return
             }
             set ::ann::confirm_destructive [expr {$value ? 1 : 0}]
+        }
+        ignore_globs {
+            # the user's own ignore patterns (gap-analysis #5). A list of globs;
+            # * spans anything (incl. separators), ? one char, case-insensitive.
+            if {[catch {llength $value}]} {
+                ann::log WARN "ignore_globs must be a list, ignored" ; return
+            }
+            set ::ann::ignore_globs $value
+            ann::apply_ignores
+        }
+        ignore_hidden {
+            # the managed hide list (written by the Settings/Hide machinery, not
+            # meant to be hand-edited — but honored if it is); union'd with ignore_globs
+            if {[catch {llength $value}]} {
+                ann::log WARN "ignore_hidden must be a list, ignored" ; return
+            }
+            set ::ann::hidden $value
+            ann::apply_ignores
         }
         window_width {
             if {[string is integer -strict $value] && $value >= 360 && $value <= 2000} {
@@ -1910,6 +1938,14 @@ proc ann::actions_for {r} {
     }
     # config-registered actions for this kind land here (M8, §11.3)
     foreach a [ann::config_actions_for $kind $r] { lappend acts $a }
+    # Hide from results (gap-analysis #5): real indexed items only — not the Run
+    # row, an alias pin, a live window, or a path-mode browse row
+    set id [dict get $r id]
+    if {$kind ne "window" && ![string match "run:*" $id] \
+            && ![string match "alias:*" $id] && ![string match "path:*" $id]} {
+        lappend acts [dict create label "Hide from results" \
+            script [list ann::act_hide $r] destructive 0]
+    }
     # the global section (§9.6): quit is always reachable
     lappend acts [dict create label "Quit ann" script [list ann::quit] destructive 0]
     return $acts
@@ -2327,6 +2363,46 @@ proc ann::settings_apply {} {
 # Persist dialog-controlled options into ann.config.tcl inside ONE managed block
 # (everything outside the markers is the user's and is preserved verbatim; the
 # block sits at the END so it wins over earlier hand-written values).
+# Push the effective ignore set (user globs ∪ hidden items) to the indexer.
+# Idempotent: a no-op unless the union actually changed, so the two apply_option
+# calls during a config reload trigger at most one indexer rescan (gap-analysis #5).
+proc ann::apply_ignores {} {
+    set u [lsort -unique [concat $::ann::ignore_globs $::ann::hidden]]
+    if {$u eq $::ann::ignores_applied} return
+    set ::ann::ignores_applied $u
+    if {[ann::has annindex::set_ignores]} { catch {annindex::set_ignores $u} }
+}
+# "Hide from results": add this path to the managed hide list, persist it into the
+# config's managed block, push it to the indexer, and drop it from the live list
+# now (the indexer rescan makes it permanent; this is the instant feedback).
+proc ann::hide_item {path} {
+    if {$path eq "" || $path in $::ann::hidden} return
+    lappend ::ann::hidden $path
+    ann::apply_ignores
+    # persist the managed block from current live state (reuses settings_save,
+    # which now also emits the hidden line — see below)
+    set roots {} ; catch { set roots [annindex::get_roots] }
+    if {[catch {ann::settings_save $roots $::ann::hotkey $::ann::result_limit} e]} {
+        ann::log ERROR "hide: could not persist: $e"
+    }
+}
+proc ann::act_hide {r} {
+    set id [dict get $r id]
+    # only real indexed items are hideable — not the Run row, an alias pin, a
+    # transient window, or a path-mode browse row (which re-globs the disk live)
+    if {[string match "run:*" $id] || [string match "alias:*" $id] \
+            || [string match "path:*" $id] || [dict get $r kind] eq "window"} return
+    set p [dict get $r path]
+    ann::hide_item $p
+    set ::ann::results [lmap x $::ann::results {
+        if {[dict get $x path] eq $p} continue ; set x
+    }]
+    set n [llength $::ann::results]
+    if {$::ann::sel >= $n} { set ::ann::sel [expr {$n > 0 ? $n - 1 : 0}] }
+    ann::render_results
+    ann::status "hidden — listed under ignore_hidden in the config"
+}
+
 proc ann::settings_save {roots hotkey result_limit} {
     set path [ann::config_path]
     set body ""
@@ -2340,6 +2416,9 @@ proc ann::settings_save {roots hotkey result_limit} {
     append body "ann::option hotkey [list $hotkey]\n"
     append body "ann::option result_limit [list $result_limit]\n"
     append body "ann::option watched_roots [list $roots]\n"
+    if {[llength $::ann::hidden]} {
+        append body "ann::option ignore_hidden [list $::ann::hidden]\n"
+    }
     append body "# <<< ann settings\n"
     # Atomic save: write a sibling temp, then rename over the target (atomic on
     # NTFS). A crash/kill mid-write loses only the temp, never the live config.

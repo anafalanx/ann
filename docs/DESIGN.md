@@ -958,6 +958,28 @@ The config is **hot-reloaded**. The indexer watches `ann.config.tcl` (it is just
 - `ann::result ...` — helper to construct a result dict. Recognized keys: `-id`, `-name`, `-subtitle`, `-icon`, `-kind`, and the action keys below.
 - `ann::launch <spec>` / `ann::run <verb> <path> ?args?` — invoke the C launch/shell layer from Tcl.
 
+> **Amendment (v0.6, gap-analysis #5): ignore globs + "Hide from results".**
+> `ann::option ignore_globs {<glob> …}` is a user knob for paths that must never
+> be indexed. A glob's `*` spans anything (including the separator, so a bare
+> name matches at any depth), `?` is one char, matching is case-insensitive, and
+> `/` and `\` both work. Enforcement is **index-time, in C** (the walk skips a
+> matching directory without descending; every catalog write funnels through one
+> upsert gate that deletes-and-refuses an ignored path; a full scan first calls
+> `purge_ignored` to evict already-indexed rows) — so search pays **zero**
+> per-keystroke cost. The knob is Tcl (`annindex::set_ignores` marshals it to the
+> indexer), the mechanism is C: the split that keeps the core solid and the
+> behavior scriptable. **The `ON CONFLICT … enabled=1` upsert would resurrect a
+> mere `enabled=0` hide on the next scan; refusing to reach the INSERT is the fix.**
+> The **action-panel** entry *Hide from results* (real indexed items only — not
+> the Run row, an alias pin, a live window, or a path-mode browse row) appends the
+> item's exact path to a **managed** `ann::option ignore_hidden {…}` line in the
+> config's managed block, so the persistence *is* the un-hide surface (edit the
+> file). The effective ignore set is `ignore_globs ∪ ignore_hidden`, so a hide
+> never disturbs the user's hand-written globs. Note the built-in **deny list**
+> (§7.2 — `node_modules`, `__pycache__`, `Windows`, …) already excludes the usual
+> noise for free; `ignore_globs` is for the rest (`*.tmp`, `*.bak`, a project the
+> user simply doesn't launch).
+
 **Default action vs. panel actions for config-provided results.** A result dict produced by `ann::result` distinguishes its **default (Enter) action** from its **action-panel actions** explicitly:
 - **`-launch <spec>`** is the **default action** — what runs when the user presses **Enter** on the result. Exactly one `-launch` is the contract for "the Enter action" of a custom result (the §11.4 example sets `-launch [list ann::run open $dir]`). If a provider omits `-launch`, the result has no default action and Enter is a no-op for that row (it can still expose panel actions).
 - Additional **action-panel** entries for that result come from any `ann::action` procs whose `-kinds` include the result's `kind` (they appear under Tab/Ctrl+K). So `-launch` = Enter; `ann::action` registrations = the panel. This contract is what makes the default action for custom providers unambiguous.

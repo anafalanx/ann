@@ -70,6 +70,7 @@
 #define ANN_USAGE_QMAX  256
 #define ANN_FILEQ_MAX   512
 #define ANN_WATCH_BUF   (60 * 1024)
+#define ANN_PATH_MAX    4096          /* UTF-8 path buffer for glob matching (well past extended-length paths) */
 
 /* ---- scan stats ------------------------------------------------------------ */
 typedef struct {
@@ -125,6 +126,35 @@ static int has_denied_component(const char *path) {
         }
     }
 }
+/* ---- user ignore globs (feature #5): a Tcl-scriptable knob, enforced here ----
+ * ann::option ignore_globs {...} and the "Hide from results" action funnel into
+ * annindex::set_ignores, storing lowercase backslash-canonical patterns. A `*`
+ * spans anything INCLUDING separators (so a node_modules glob written with stars
+ * around it matches at any depth) and `?` is one char. Matching is case-
+ * insensitive against the whole path. This is the C half
+ * of "solid core, scriptable behavior": the pattern list is owned by the user's
+ * config; enforcement lives on the index hot path so search pays no per-key tax. */
+#define ANN_IGNORES_MAX 64
+static char *gIgnores[ANN_IGNORES_MAX];         /* lowercase, backslash-canonical; under gLock */
+static int   gIgnoresN = 0;
+/* glob_match: `*` (any run) / `?` (one char), iterative with backtracking so it
+ * is O(n·m) worst case and never recurses on a huge path. Both args lowercase.
+ * A leading `*` is what lets a bare `node_modules` glob written as star slash
+ * node_modules slash star match at any depth. */
+static int glob_match(const char *pat, const char *str) {
+    const char *star = NULL, *ss = NULL;
+    while (*str) {
+        if (*pat == '?' || *pat == *str) { pat++; str++; }
+        else if (*pat == '*') { star = pat++; ss = str; }   /* remember, match zero */
+        else if (star) { pat = star + 1; str = ++ss; }      /* backtrack: star eats one more */
+        else return 0;
+    }
+    while (*pat == '*') pat++;
+    return *pat == 0;
+}
+/* path_ignored + purge_ignored are defined below, after gLock and Writer. */
+static int  path_ignored(const char *path);
+
 static int allow_ext(const char *name) {
     const char *dot = strrchr(name, '.');
     if (!dot || !dot[1]) return 0;
@@ -140,6 +170,22 @@ static int allow_ext(const char *name) {
 static CRITICAL_SECTION gLock;
 static int gLockInit = 0;
 static Stats gLastStats;
+/* path_ignored: does `path` (any case, any separators) match any ignore glob?
+ * Takes gLock itself, so callers must NOT already hold it. gIgnoresN is tiny. */
+static int path_ignored(const char *path) {
+    if (!path) return 0;
+    char low[ANN_PATH_MAX];
+    size_t n = 0;
+    for (const char *p = path; *p && n < sizeof low - 1; p++)
+        low[n++] = (*p == '/') ? '\\' : (char) tolower((unsigned char) *p);
+    low[n] = 0;
+    int hit = 0;
+    EnterCriticalSection(&gLock);
+    for (int i = 0; i < gIgnoresN; i++)
+        if (glob_match(gIgnores[i], low)) { hit = 1; break; }
+    LeaveCriticalSection(&gLock);
+    return hit;
+}
 static double gFrecLambda = ANN_FREC_LAMBDA;   /* annindex::tune (M8) */
 
 static char *gRoots[ANN_ROOTS_MAX];            /* UTF-8, Tcl_Alloc'd; under gLock */
@@ -202,6 +248,38 @@ typedef struct {
     sqlite3_stmt *up, *getm, *touch, *del;
     sqlite3_int64 gen;          /* current scan generation (stamped into updated_at) */
 } Writer;
+
+/* Delete every catalog row whose path matches an ignore glob. Runs on the writer
+ * thread at the start of a full scan, so a newly-added pattern evicts already-
+ * indexed rows even inside directories the walk will no longer descend into. */
+static void purge_ignored(Writer *w) {
+    int any;
+    EnterCriticalSection(&gLock); any = gIgnoresN; LeaveCriticalSection(&gLock);
+    if (!any) return;
+    sqlite3_stmt *sel = NULL, *del = NULL;
+    if (sqlite3_prepare_v2(w->db, "SELECT path FROM catalog", -1, &sel, NULL) != SQLITE_OK) return;
+    if (sqlite3_prepare_v2(w->db, "DELETE FROM catalog WHERE path=?1", -1, &del, NULL) != SQLITE_OK) {
+        sqlite3_finalize(sel); return;
+    }
+    /* collect first: deleting mid-iteration over the same table is fragile */
+    char **hits = NULL; int nh = 0, cap = 0;
+    while (sqlite3_step(sel) == SQLITE_ROW) {
+        const char *p = (const char *) sqlite3_column_text(sel, 0);
+        if (p && path_ignored(p)) {
+            if (nh == cap) { cap = cap ? cap * 2 : 64; hits = (char **) realloc(hits, (size_t) cap * sizeof *hits); }
+            hits[nh++] = _strdup(p);
+        }
+    }
+    sqlite3_finalize(sel);
+    for (int i = 0; i < nh; i++) {
+        sqlite3_reset(del);
+        sqlite3_bind_text(del, 1, hits[i], -1, SQLITE_TRANSIENT);
+        sqlite3_step(del);
+        free(hits[i]);
+    }
+    free(hits);
+    sqlite3_finalize(del);
+}
 
 static int writer_open(Writer *w, const char *path) {
     memset(w, 0, sizeof *w);
@@ -266,6 +344,21 @@ static int writer_upsert(Writer *w, const char *path, const char *name, const ch
 static int writer_upsert_tier(Writer *w, const char *path, const char *name, const char *kind,
                               const char *lk, const char *target, const char *kw,
                               sqlite3_int64 mtime, int tier) {
+    /* The ignore-glob gate (feature #5), placed at the ONE point every catalog
+     * write funnels through — the file walk, app/UWP discovery, and targeted
+     * watcher events all land here. An ignored path is DELETED (in case a prior
+     * scan indexed it) and never inserted. This is what makes "Hide" survive a
+     * re-scan by design: the ON CONFLICT clause below forces enabled=1, so a
+     * mere enabled=0 would resurrect — refusing to reach the INSERT is the fix. */
+    if (path_ignored(path)) {
+        sqlite3_stmt *d = NULL;
+        if (sqlite3_prepare_v2(w->db, "DELETE FROM catalog WHERE path=?1", -1, &d, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(d, 1, path, -1, SQLITE_TRANSIENT);
+            sqlite3_step(d);
+            sqlite3_finalize(d);
+        }
+        return 1;   /* "handled": the caller counts it as processed, not an error */
+    }
     size_t rawcap = strlen(name) + (target ? strlen(target) : 0) + (kw ? strlen(kw) : 0) + 4;
     char *raw = (char *) Tcl_Alloc(rawcap);
     snprintf(raw, rawcap, "%s %s %s", name, target ? target : "", kw ? kw : "");
@@ -577,6 +670,10 @@ static void walk_tree(Walk *wk, const wchar_t *dir, int depth) {
         char *uname = wide_to_utf8(fd.cFileName);
         int isdir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
         int want = 1, recurse = isdir && !(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT);
+        /* user ignore globs (feature #5): a matching directory is not descended
+         * (so an ignored node_modules subtree costs nothing) and a matching file
+         * is not indexed; purge_ignored evicts anything already present. */
+        if (path_ignored(u)) { want = 0; recurse = 0; }
         if (isdir) {
             /* the deny list holds for BOTH tiers: a node_modules inside
              * Documents must not eat the tier-0 budget (seen on real machines) */
@@ -769,6 +866,7 @@ static void do_scan_bulk(Writer *w, Stats *st, char *slow[], int nslow,
 /* the sync (test/tool) path: both phases, no notifies, no background mode */
 static void do_scan(Writer *w, Stats *st) {
     memset(st, 0, sizeof *st);
+    purge_ignored(w);   /* same as thread_full_scan: evict newly-ignored rows */
     char *roots[ANN_ROOTS_MAX]; int pr[ANN_ROOTS_MAX]; int nroots = 0;
     roots_snapshot(roots, pr, &nroots);
     char *fast[ANN_ROOTS_MAX], *slow[ANN_ROOTS_MAX];
@@ -958,6 +1056,9 @@ static void scan_publish(const Stats *st) {
 
 static void thread_full_scan(Writer *w, Stats *st) {
     memset(st, 0, sizeof *st);
+    /* evict already-indexed rows that a newly-added ignore glob now covers,
+     * including any inside directories the walk below will no longer descend */
+    purge_ignored(w);
     char *roots[ANN_ROOTS_MAX]; int pr[ANN_ROOTS_MAX]; int nroots = 0;
     roots_snapshot(roots, pr, &nroots);
     char *fast[ANN_ROOTS_MAX], *slow[ANN_ROOTS_MAX];
@@ -1494,6 +1595,38 @@ static int Idx_GetRoots(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[
     return TCL_OK;
 }
 
+static int Idx_SetIgnores(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[]) {
+    /* set_ignores <globList> — replace the ignore-glob set (feature #5). Patterns
+     * are stored lowercase and backslash-canonical, since path_ignored matches
+     * that way. When the indexer is running, force a full re-walk: purge_ignored
+     * evicts freshly-covered rows and the walk stops re-adding them. */
+    (void) cd;
+    if (objc != 2) { Tcl_WrongNumArgs(ip, 1, objv, "globList"); return TCL_ERROR; }
+    Tcl_Size n; Tcl_Obj **elems;
+    if (Tcl_ListObjGetElements(ip, objv[1], &n, &elems) != TCL_OK) return TCL_ERROR;
+    if (n > ANN_IGNORES_MAX) n = ANN_IGNORES_MAX;
+    EnterCriticalSection(&gLock);
+    for (int i = 0; i < gIgnoresN; i++) { Tcl_Free(gIgnores[i]); gIgnores[i] = NULL; }
+    gIgnoresN = 0;
+    for (Tcl_Size i = 0; i < n; i++) {
+        const char *s = Tcl_GetString(elems[i]);
+        char *cp = (char *) Tcl_Alloc(strlen(s) + 1);
+        size_t j = 0;
+        for (; ; j++) {
+            char c = s[j];
+            cp[j] = (c == '/') ? '\\' : (char) tolower((unsigned char) c);
+            if (!c) break;
+        }
+        gIgnores[gIgnoresN++] = cp;
+    }
+    LeaveCriticalSection(&gLock);
+    if (gIdxThread && !gWedged) {
+        InterlockedExchange(&gBulkForce, 1);   /* purge + re-walk under the new set */
+        SetEvent(gWork);
+    }
+    return TCL_OK;
+}
+
 static int Idx_Tune(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[]) {
     (void) cd;
     if (objc == 2) {           /* compat: tune <halflife_days> */
@@ -1576,6 +1709,7 @@ int Annindex_Init(Tcl_Interp *ip) {
     Tcl_CreateObjCommand(ip, "::annindex::record_usage", Idx_RecordUsage, NULL, NULL);
     Tcl_CreateObjCommand(ip, "::annindex::set_roots",    Idx_SetRoots,    NULL, NULL);
     Tcl_CreateObjCommand(ip, "::annindex::get_roots",    Idx_GetRoots,    NULL, NULL);
+    Tcl_CreateObjCommand(ip, "::annindex::set_ignores",  Idx_SetIgnores,  NULL, NULL);
     Tcl_CreateObjCommand(ip, "::annindex::tune",         Idx_Tune,        NULL, NULL);
     Tcl_CreateObjCommand(ip, "::annindex::drives",       Idx_Drives,      NULL, NULL);
     Tcl_CreateObjCommand(ip, "::annindex::priority_paths", Idx_PriorityPaths, NULL, NULL);
