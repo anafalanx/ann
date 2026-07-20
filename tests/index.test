@@ -123,9 +123,14 @@ test ix-1.6 {frecency write path: record_usage floats the app to the empty-query
     set ::ixr [anndb::open [ixdb] -readonly]
     set hit [lindex [anndb::search $::ixr calc 1] 0]
     set id [dict get $hit id] ; set nm [dict get $hit name]
-    set ::ixd 0
     annindex::record_usage $id
-    set t0 [clock milliseconds] ; while {!$::ixd && [clock milliseconds]-$t0 < 5000} { update ; after 30 }
+    # wait on the COMMITTED ack (stats usage_flushed), never on a kind-0
+    # notify: scan-phase publishes (start / fast-done / bulk-done) are
+    # indistinguishable from the usage notify and can still be queued here,
+    # so a notify-based wait reopened the reader before the frecency tx
+    # committed (flaked 2026-07-20: empty-query returned no rows)
+    set t0 [clock milliseconds]
+    while {[dict get [annindex::stats] usage_flushed] < 1 && [clock milliseconds]-$t0 < 5000} { update ; after 30 }
     anndb::close $::ixr ; set ::ixr ""
     set ::ixr [anndb::open [ixdb] -readonly]
     set top [dict get [lindex [anndb::search $::ixr "" 1] 0] name]

@@ -33,6 +33,8 @@
  *   annindex::start <dbpath> <notifyProc> ?configPath configNotifyProc?
  *   annindex::rescan | stop | active | stats
  *   annindex::record_usage <catalog_id>      -> queue a launch for frecency
+ *                                               (stats usage_flushed advances
+ *                                               once the write tx has ended)
  *   annindex::set_roots <list>               -> watched roots (rescan + rewatch)
  *   annindex::get_roots
  *   annindex::tune <halflife_days>           -> frecency decay used on writes
@@ -149,6 +151,13 @@ static int   gRootsN = 0;
 
 static sqlite3_int64 gUsageQ[ANN_USAGE_QMAX];  /* under gLock */
 static int gUsageN = 0;
+static int gUsageFlushed = 0;                  /* usage events whose write tx has
+                                                * ENDED (under gLock): the only
+                                                * committed-visibility ack for
+                                                * record_usage — a kind-0 notify is
+                                                * not one (scan-phase publishes are
+                                                * indistinguishable and may still
+                                                * be queued on the GUI side) */
 
 typedef struct { char *path; int remove; } FileEv; /* path Tcl_Alloc'd; under gLock */
 static FileEv gFileQ[ANN_FILEQ_MAX];
@@ -1022,8 +1031,14 @@ static Tcl_ThreadCreateType IdxThreadProc(ClientData cd) {
             int errors = 0;
             int intx = (sqlite3_exec(w.db, "BEGIN", NULL, NULL, NULL) == SQLITE_OK);
             for (int i = 0; i < n; i++) if (!record_usage(&w, ids[i], now)) errors++;
-            if (intx) sqlite3_exec(w.db, "COMMIT", NULL, NULL, NULL);
-            if (errors) { EnterCriticalSection(&gLock); gLastStats.errors += errors; LeaveCriticalSection(&gLock); }
+            if (intx && sqlite3_exec(w.db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) errors++;
+            /* the flushed count moves ONLY after the tx is over, so a stats
+             * poll that sees it advance is guaranteed to see the frecency
+             * rows on a fresh read (WAL snapshot taken after the commit) */
+            EnterCriticalSection(&gLock);
+            gLastStats.errors += errors;
+            gUsageFlushed += n;
+            LeaveCriticalSection(&gLock);
             notify_gui(0);
         } else if (r == WAIT_OBJECT_0 + 3) {           /* gFileEvt: targeted updates */
             if (apply_file_events(&w) > 0) notify_gui(0);
@@ -1299,6 +1314,9 @@ static int Idx_Start(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[]) 
         snprintf(gCfgPath, sizeof gCfgPath, "%s", Tcl_GetString(objv[3]));
         gNotifyCfg = objv[4]; Tcl_IncrRefCount(gNotifyCfg);
     }
+    /* a fresh instance owns fresh usage state: drop ids queued against the
+     * previous instance's db and restart the flushed-ack counter */
+    EnterCriticalSection(&gLock); gUsageN = 0; gUsageFlushed = 0; LeaveCriticalSection(&gLock);
     gReadyOk = 0;                            /* reset BEFORE the thread can write */
     gStop    = CreateEventW(NULL, TRUE, FALSE, NULL);
     gWork    = CreateEventW(NULL, FALSE, FALSE, NULL);
@@ -1390,9 +1408,11 @@ static int Idx_Active(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[])
 
 static int Idx_Stats(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[]) {
     (void) cd; (void) objc; (void) objv;
-    Stats st;
-    EnterCriticalSection(&gLock); st = gLastStats; LeaveCriticalSection(&gLock);
-    Tcl_SetObjResult(ip, stats_dict(ip, &st));
+    Stats st; int uf;
+    EnterCriticalSection(&gLock); st = gLastStats; uf = gUsageFlushed; LeaveCriticalSection(&gLock);
+    Tcl_Obj *d = stats_dict(ip, &st);
+    Tcl_DictObjPut(ip, d, Tcl_NewStringObj("usage_flushed", -1), Tcl_NewIntObj(uf));
+    Tcl_SetObjResult(ip, d);
     return TCL_OK;
 }
 
