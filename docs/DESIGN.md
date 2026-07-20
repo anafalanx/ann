@@ -980,6 +980,21 @@ The config is **hot-reloaded**. The indexer watches `ann.config.tcl` (it is just
 > noise for free; `ignore_globs` is for the rest (`*.tmp`, `*.bak`, a project the
 > user simply doesn't launch).
 
+> **Amendment (v0.6, gap-analysis #6 & #7).**
+> **`ann::option show_scores 1`** — a debug view of the ranking: each result's
+> subtitle is prefixed with `[final  fN frecN tN]` (the blended final, the fuzzy
+> component, normalized frecency, and tier). The components are computed in the C
+> blend (`anndb.c` make_row now surfaces `sc_fuzzy`/`sc_frec` alongside `score`
+> and `tier`); this is a debug surface for tuning the exposed `weight_*` /
+> `frecency_norm_k` knobs, not a feature toggle.
+> **`-term` exclusion** (no config, always on) — a whitespace-delimited query
+> token that *starts* with `-` (so a hyphenated filename like `foo-bar` is
+> untouched) is a negative substring filter: `report -draft` searches for
+> `report` and drops any result whose name or path contains `draft`. Stripped
+> from the query in `ann::split_query` **before** it reaches the search / window /
+> provider candidate sources (all must see the cleaned query), then applied as a
+> post-filter on the merged rows (`ann::apply_excludes`, tested on name+path).
+
 **Default action vs. panel actions for config-provided results.** A result dict produced by `ann::result` distinguishes its **default (Enter) action** from its **action-panel actions** explicitly:
 - **`-launch <spec>`** is the **default action** — what runs when the user presses **Enter** on the result. Exactly one `-launch` is the contract for "the Enter action" of a custom result (the §11.4 example sets `-launch [list ann::run open $dir]`). If a provider omits `-launch`, the result has no default action and Enter is a no-op for that row (it can still expose panel actions).
 - Additional **action-panel** entries for that result come from any `ann::action` procs whose `-kinds` include the result's `kind` (they appear under Tab/Ctrl+K). So `-launch` = Enter; `ann::action` registrations = the panel. This contract is what makes the default action for custom providers unambiguous.

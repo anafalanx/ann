@@ -228,8 +228,11 @@ static int Db_Upsert(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[]) 
     return TCL_OK;
 }
 
-/* build a result dict (id name path kind launch target score) from the current row */
-static Tcl_Obj *make_row(Tcl_Interp *ip, sqlite3_stmt *s, double score) {
+/* build a result dict (id name path kind launch target score) from the current
+ * row. fuzzy/normf are the blend components (sc_fuzzy / sc_frec) surfaced for the
+ * show_scores debug view (gap-analysis #6); pass 0 when not scoring (the `get`
+ * single-item path). */
+static Tcl_Obj *make_row(Tcl_Interp *ip, sqlite3_stmt *s, double score, double fuzzy, double normf) {
     Tcl_Obj *d = Tcl_NewDictObj();
     Tcl_DictObjPut(ip, d, Tcl_NewStringObj("id", -1),     Tcl_NewWideIntObj(sqlite3_column_int64(s, 0)));
     Tcl_DictObjPut(ip, d, Tcl_NewStringObj("name", -1),   Tcl_NewStringObj((const char *) sqlite3_column_text(s, 1), -1));
@@ -238,7 +241,9 @@ static Tcl_Obj *make_row(Tcl_Interp *ip, sqlite3_stmt *s, double score) {
     Tcl_DictObjPut(ip, d, Tcl_NewStringObj("launch", -1), Tcl_NewStringObj((const char *) sqlite3_column_text(s, 4), -1));
     const unsigned char *tg = sqlite3_column_text(s, 5);
     Tcl_DictObjPut(ip, d, Tcl_NewStringObj("target", -1), Tcl_NewStringObj(tg ? (const char *) tg : "", -1));
-    Tcl_DictObjPut(ip, d, Tcl_NewStringObj("score", -1),  Tcl_NewDoubleObj(score));
+    Tcl_DictObjPut(ip, d, Tcl_NewStringObj("score", -1),    Tcl_NewDoubleObj(score));
+    Tcl_DictObjPut(ip, d, Tcl_NewStringObj("sc_fuzzy", -1), Tcl_NewDoubleObj(fuzzy));
+    Tcl_DictObjPut(ip, d, Tcl_NewStringObj("sc_frec", -1),  Tcl_NewDoubleObj(normf));
     if (sqlite3_column_count(s) > 9)
         Tcl_DictObjPut(ip, d, Tcl_NewStringObj("tier", -1), Tcl_NewIntObj(sqlite3_column_int(s, 9)));
     return d;
@@ -272,7 +277,7 @@ static int Db_Get(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[]) {
     }
     sqlite3_bind_text(s, 1, Tcl_GetString(objv[2]), -1, SQLITE_TRANSIENT);
     int rc = sqlite3_step(s);
-    if (rc == SQLITE_ROW) Tcl_SetObjResult(ip, make_row(ip, s, ANN_SCORE_MAX));
+    if (rc == SQLITE_ROW) Tcl_SetObjResult(ip, make_row(ip, s, ANN_SCORE_MAX, 0.0, 0.0));
     sqlite3_finalize(s);
     if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
         Tcl_SetObjResult(ip, Tcl_ObjPrintf("get: %s", sqlite3_errmsg(db)));
@@ -523,7 +528,7 @@ static int Db_Search(void *cd, Tcl_Interp *ip, int objc, Tcl_Obj *const objv[]) 
         double fin   = (nlen > 0) ? (gWFuzzy * fuzzy + gWFrec * normf) : normf;
         /* priority-location rows outrank equal deep-disk rows (§7.2) */
         if (nlen > 0 && sqlite3_column_int(s, 9) == 0) fin += gWTier;
-        Tcl_Obj *d = make_row(ip, s, fin);
+        Tcl_Obj *d = make_row(ip, s, fin, fuzzy, normf);
         Tcl_IncrRefCount(d);
         arr[k].final = fin; arr[k].dict = d; k++;
     }

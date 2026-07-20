@@ -1,0 +1,86 @@
+# tests/score.test — score inspection (gap-analysis #6) + -term exclusion (#7).
+# Both are pure-Tcl surface over the C blend; #6's C half (sc_fuzzy/sc_frec in the
+# result dict) is exercised under the hasindex constraint.
+
+package require tcltest
+namespace import ::tcltest::*
+
+# ---- #6: subtitle_scored -------------------------------------------------------
+test score-1.1 {show_scores off: the subtitle is untouched} -body {
+    set ::ann::show_scores 0
+    ann::subtitle_scored [dict create kind file path {C:\a.txt} name a score 3.0 sc_fuzzy 2.0 sc_frec 0.5 tier 1]
+} -result {C:\a.txt}
+
+test score-1.2 {show_scores on: indexed result prepends [final f frec t]} -body {
+    set ::ann::show_scores 1
+    set s [ann::subtitle_scored [dict create kind file path {C:\a.txt} name a \
+        score 2.35 sc_fuzzy 2.0 sc_frec 0.51 tier 0]]
+    set ::ann::show_scores 0
+    set s
+} -result {[2.35  f2.0 frec0.51 t0]  C:\a.txt}
+
+test score-1.3 {a result with a score but no components shows just the final} -body {
+    set ::ann::show_scores 1
+    set s [ann::subtitle_scored [dict create kind app path X name A score 1000000000.0 target {}]]
+    set ::ann::show_scores 0
+    set s
+} -result {[1000000000.00]  X}
+
+test score-1.4 {a scoreless row (no score key) is never annotated} -body {
+    set ::ann::show_scores 1
+    set s [ann::subtitle_scored [dict create kind uwp path aumid name A target {}]]
+    set ::ann::show_scores 0
+    set s
+} -result {App (Store)}
+
+test score-1.5 {show_scores rejects a non-boolean and stays put} -body {
+    set ::ann::show_scores 0
+    ann::apply_option show_scores 1 ; set on $::ann::show_scores
+    ann::apply_option show_scores frobnicate
+    set out [list $on $::ann::show_scores]
+    set ::ann::show_scores 0
+    set out
+} -result {1 1}
+
+# ---- #7: split_query + apply_excludes -----------------------------------------
+test score-2.1 {a leading-dash token is an exclusion; hyphenated words are not} -body {
+    ann::split_query {report -draft foo-bar -tmp}
+} -result {{report foo-bar} {draft tmp}}
+
+test score-2.2 {no dash tokens: the query is unchanged, no excludes} -body {
+    ann::split_query {google chrome}
+} -result {{google chrome} {}}
+
+test score-2.3 {a lone dash is kept as text, not treated as an empty exclude} -body {
+    ann::split_query {a - b}
+} -result {{a - b} {}}
+
+test score-2.4 {apply_excludes drops rows matching name OR path, case-insensitively} -body {
+    set rows [list \
+        [dict create name Report.docx  path {C:\work\Report.docx}] \
+        [dict create name draft2.txt   path {C:\work\draft2.txt}] \
+        [dict create name notes.txt    path {C:\DRAFTS\notes.txt}]]
+    lmap r [ann::apply_excludes $rows {draft}] {dict get $r name}
+} -result {Report.docx}
+
+test score-2.5 {no excludes: rows pass through untouched} -body {
+    set rows [list [dict create name a path x] [dict create name b path y]]
+    llength [ann::apply_excludes $rows {}]
+} -result 2
+
+# ---- #6 C half: the blend components reach the result dict ---------------------
+proc scdb {} { return [file join $::ANN_TMP sc[pid].db] }
+proc scclean {} { foreach s {{} -wal -shm} { catch {file delete -force [scdb]$s} } }
+test score-3.1 {search results carry sc_fuzzy and sc_frec from the C blend} \
+        -constraints hasindex -setup {scclean} -cleanup {
+    catch {file delete -force [file join $::ANN_FSROOT scuniqfile.txt]} ; scclean
+} -body {
+    set fh [open [file join $::ANN_FSROOT scuniqfile.txt] w] ; puts -nonewline $fh x ; close $fh
+    annindex::set_ignores {}
+    annindex::scan [scdb]
+    set rd [anndb::open [scdb] -readonly]
+    set hit [lindex [anndb::search $rd scuniqfile 5] 0]
+    anndb::close $rd
+    list [dict exists $hit sc_fuzzy] [dict exists $hit sc_frec] \
+         [expr {[dict get $hit sc_fuzzy] > 0}]
+} -result {1 1 1}

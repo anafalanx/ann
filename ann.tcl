@@ -44,6 +44,7 @@ namespace eval ann {
     variable confirm_destructive 1     ;# inline confirm for shutdown/restart/empty-bin (§15.4)
     variable ignore_globs {}           ;# user knob: ann::option ignore_globs {...} (gap-analysis #5)
     variable hidden {}                 ;# managed: paths hidden via the action panel (persisted in the managed block)
+    variable show_scores 0             ;# debug view: subtitle shows final (fuzzy/frec/tier) (gap-analysis #6)
     variable ignores_applied "￿" ;# last {globs∪hidden} pushed to the indexer (sentinel: never a real value, so the first apply always fires)
 
     # M5: live running-windows provider (enumerated, never persisted — §7.3)
@@ -303,6 +304,15 @@ ann::option watched_roots [lmap p [ann::default_roots] { list $p 1 }]
 # the managed block below — this is your hand-written half.)
 # ann::option ignore_globs {*/node_modules/* *.tmp *.bak *~}
 
+# ann::option show_scores 1   ;# debug the ranking: each subtitle shows
+#                              #   [final  fN frecN tN]  — final blend, fuzzy,
+#                              #   normalized frecency, tier — for tuning the
+#                              #   weight_* / frecency_norm_k knobs above.
+
+# Query tip (no config needed): a token starting with "-" excludes it, e.g.
+# `report -draft` hides anything whose name or path contains "draft". A
+# hyphenated filename like `foo-bar` is untouched (only a leading "-" negates).
+
 # ---- a keyword alias (§6.7): typing exactly "cfg" pins this file to the top --
 # (a partial or typo'd keyword also recalls the target, at its fuzzy score)
 ann::alias cfg [file join $ann::dir ann.config.tcl]
@@ -427,6 +437,16 @@ proc ann::apply_option {opt value} {
             }
             set ::ann::hidden $value
             ann::apply_ignores
+        }
+        show_scores {
+            # debug the ranking: append final (fuzzy/frec/tier) to each subtitle
+            # (gap-analysis #6). A debug surface for tuning the exposed weights,
+            # not a feature toggle.
+            if {![string is boolean -strict $value]} {
+                ann::log WARN "show_scores '$value' is not a boolean, ignored" ; return
+            }
+            set ::ann::show_scores [expr {$value ? 1 : 0}]
+            if {[winfo exists .c.list]} { ann::render_results }
         }
         window_width {
             if {[string is integer -strict $value] && $value >= 360 && $value <= 2000} {
@@ -1153,6 +1173,49 @@ proc ann::subtitle {r} {
         default  { return [dict get $r path] }
     }
 }
+# The subtitle plus, when show_scores is on, the ranking breakdown prepended so it
+# survives the middle-ellipsis of a long path (gap-analysis #6). Indexed results
+# carry score/sc_fuzzy/sc_frec/tier from the C blend; anything else shows just its
+# final score (aliases pin at 1e9, the Run row is 0).
+proc ann::subtitle_scored {r} {
+    set s [ann::subtitle $r]
+    if {!$::ann::show_scores || ![dict exists $r score]} { return $s }
+    set fin [format %.2f [dict get $r score]]
+    if {[dict exists $r sc_fuzzy] && [dict exists $r sc_frec]} {
+        set t [expr {[dict exists $r tier] ? [dict get $r tier] : "-"}]
+        return [format {[%s  f%.1f frec%.2f t%s]  %s} \
+            $fin [dict get $r sc_fuzzy] [dict get $r sc_frec] $t $s]
+    }
+    return "\[$fin]  $s"
+}
+
+# ---- -term exclusion (gap-analysis #7) --------------------------------------
+# A whitespace-delimited token that STARTS with '-' (so a hyphenated filename
+# like foo-bar is untouched) is a negative substring filter. split_query returns
+# {cleaned excludes}: the cleaned query (excludes removed, re-joined) feeds the
+# search/window/provider candidates; the excludes post-filter the merged rows on
+# name+path. A lone '-' or '-'-only token is ignored.
+proc ann::split_query {q} {
+    set keep {} ; set excl {}
+    foreach tok [regexp -all -inline {\S+} $q] {
+        if {[string index $tok 0] eq "-" && [string length $tok] > 1} {
+            lappend excl [string tolower [string range $tok 1 end]]
+        } else {
+            lappend keep $tok
+        }
+    }
+    return [list [join $keep " "] $excl]
+}
+proc ann::apply_excludes {rows excludes} {
+    if {![llength $excludes]} { return $rows }
+    return [lmap r $rows {
+        set hay [string tolower "[dict get $r name] [dict get $r path]"]
+        set drop 0
+        foreach e $excludes { if {[string first $e $hay] >= 0} { set drop 1 ; break } }
+        if {$drop} continue
+        set r
+    }]
+}
 
 # which icon to show for a result (consumed by annicon::fill)
 proc ann::icon_spec {r} {
@@ -1199,7 +1262,7 @@ proc ann::render_results {} {
                 set r [lindex $results $ri]
                 set maxpx [expr {$::ann::window_width - 110}]
                 $f.tx.name configure -text [ann::fit annRowName [dict get $r name] $maxpx end]
-                $f.tx.sub  configure -text [ann::fit annRowSub [ann::subtitle $r] $maxpx middle]
+                $f.tx.sub  configure -text [ann::fit annRowSub [ann::subtitle_scored $r] $maxpx middle]
                 if {[ann::has annicon::fill]} {
                     # render stays in the §6.6 budget: paint from CACHE only; a
                     # miss shows a stock placeholder now and the real icon is
@@ -1737,14 +1800,17 @@ proc ann::path_pop {} {
 proc ann::do_query {{mode -reset}} {
     variable reader
     if {![winfo exists .c.q]} return
-    set q [.c.q get]
+    # -term exclusion (gap-analysis #7): pull negative tokens off the query FIRST,
+    # so every candidate source (search, windows, providers, path mode) sees the
+    # cleaned query; the excludes post-filter the merged rows on name+path.
+    lassign [ann::split_query [.c.q get]] q excludes
     # path mode (gap-analysis #4): a rooted path browses instead of searching —
     # its own ordering, no windows/providers/aliases, no Run fallback row (an
     # unknown directory simply lists nothing)
     lassign [ann::path_parse $q] pdir ptail
     if {$pdir ne ""} {
         set ::ann::path_mode 1
-        set ::ann::results [ann::path_results $pdir $ptail]
+        set ::ann::results [ann::apply_excludes [ann::path_results $pdir $ptail] $excludes]
         set ::ann::sel 0
         set ::ann::view_offset 0
         if {$mode ne "-keepsel"} { ann::panel_close }
@@ -1764,7 +1830,7 @@ proc ann::do_query {{mode -reset}} {
     }
     lappend cands {*}[ann::window_candidates $q]
     lappend cands {*}[ann::provider_candidates $q]
-    set ::ann::results [ann::rank $cands $q]
+    set ::ann::results [ann::apply_excludes [ann::rank $cands $q] $excludes]
     set ::ann::sel 0
     set ::ann::view_offset 0
     if {$keepid ne ""} {
