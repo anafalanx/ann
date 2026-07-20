@@ -786,6 +786,28 @@ This is a genuine Tk-on-Windows limitation that the design confronts directly:
   > `ann.history` (one query per line, newest first, cap 50, atomic
   > temp-and-rename, best-effort — history must never break a launch). No new
   > chrome: the entry itself is the whole UI.
+  > **Amendment (v0.6, gap-analysis #4): path mode.** A rooted path in the
+  > entry (`X:\`, `X:/`, UNC `\\server\…`; a **leading** `~` or `%VAR%` expands
+  > first) switches the box into a live directory listing: the text up to the
+  > last separator names the directory, the tail fuzzy-filters the listing.
+  > **Tab completes the top result into the entry** (a folder gains a trailing
+  > `\` — Tab is the descend; **Enter stays the ordinary launch**, so a folder
+  > row opens in Explorer); **Ctrl+Backspace pops one level** (outside path
+  > mode the chord falls through to Tk's word-delete). Ordering deliberately
+  > **bypasses rank/bucketize** (whose cmds→execs→files→dirs nature order is
+  > backwards for browsing): directories first, then files; `lsort -dictionary`
+  > name order while the tail is empty, fuzzy score on the tail otherwise —
+  > and no windows/providers/aliases and **no Run fallback row** (an unknown
+  > directory lists nothing). Rows are ordinary file/folder dicts, so icons
+  > and every panel verb work unchanged. Attribute-hidden entries are skipped
+  > (Tcl `glob`'s Windows default — Explorer's behavior); dot-named files that
+  > are not attribute-hidden appear. Listings cap at `PATH_LIST_CAP` (1000)
+  > with the status bar's `cap` marker. This creates the **one documented Tab
+  > mode-exception** to the §9.5 amendment: in path mode Tab means completion
+  > (the universal shell convention) and **Ctrl+K is the panel's unconditional
+  > opener everywhere**. FARR's `c:\pro\com` multi-segment smart matching is
+  > the noted stretch goal, deliberately not built until the plain mode earns
+  > daily use.
 - **Virtualized list:** only visible rows hold live Tk photo images (§9.7). Scrolling reuses row widgets.
 
 ### 9.5 The action panel (Raycast-style)
@@ -793,7 +815,9 @@ This is a genuine Tk-on-Windows limitation that the design confronts directly:
 > **Amendment (v0.5+, by owner decision — supersedes the custom slide-in
 > panel):** the action surface is a **classic NATIVE context menu** (Tk menu →
 > a real Windows popup menu), opened with **Tab/Ctrl+K** at the selected row or
-> by **right-clicking any row** (which selects it first). Navigation, Enter and
+> by **right-clicking any row** (which selects it first). (One documented
+> exception since v0.6: in **path mode** Tab means completion and Ctrl+K is the
+> panel's sole keyboard opener — see the §9.4 path-mode amendment.) Navigation, Enter and
 > Esc are the native menu's own. **Destructive actions use the classic
 > cascade-confirm idiom**: the item is a submenu ("Run... ▸ Confirm: Run"), so
 > a stray Enter can never fire them and no dialog box is ever involved (§15.4

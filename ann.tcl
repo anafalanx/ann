@@ -29,6 +29,9 @@ namespace eval ann {
     variable hist_idx -1          ;# recall cursor into hist; -1 = live editing
     variable hist_live ""         ;# the in-progress text saved when recall begins
     variable HIST_MAX 50          ;# MRU cap (file + memory)
+    variable path_mode 0          ;# 1 while the query is a rooted path (gap-analysis #4): Tab completes, Ctrl+Backspace pops
+    variable path_capped 0        ;# 1 when the last directory listing hit PATH_LIST_CAP (status-bar marker)
+    variable PATH_LIST_CAP 1000   ;# max directory entries enumerated per listing (huge dirs stay responsive; the tail filter narrows anyway)
     variable result_limit 9            ;# rows in the VIEWPORT (DESIGN §11.4)
     variable result_max 50             ;# results kept in the scrollable list
     variable view_offset 0             ;# results index of the first visible row
@@ -736,8 +739,14 @@ proc ann::build {} {
     bind .c.q <Control-Down> { ann::hist_next ; break }
     bind .c.q <Return>    { ann::key_nav enter ; break }
     bind .c.q <Escape>    { ann::key_nav escape ; break }
+    # Tab is mode-dependent (path mode: completion — the one documented mode
+    # exception, DESIGN §9.5 amendment); Ctrl+K opens the panel UNCONDITIONALLY,
+    # so the panel is never out of reach while browsing.
     bind .c.q <Tab>       { ann::key_nav tab ; break }
-    bind .c.q <Control-k> { ann::key_nav tab ; break }
+    bind .c.q <Control-k> { ann::panel_toggle ; break }
+    # Ctrl+Backspace pops one path level in path mode; outside it the binding
+    # declines (returns 0) and Tk's default word-delete proceeds.
+    bind .c.q <Control-BackSpace> { if {[ann::path_pop]} break }
 
     # Dock order matters (Tk packer): the non-expanding status bar must claim the
     # bottom edge BEFORE the expanding content frame claims the rest.
@@ -1269,6 +1278,7 @@ proc ann::update_foot {} {
     if {![winfo exists .status.in.info]} return
     set n [llength $::ann::results]
     set extra [expr {$::ann::indexing ? "  ·  indexing…" : ""}]
+    if {$::ann::path_capped} { set extra "  ·  cap$extra" }   ;# listing hit PATH_LIST_CAP
     .status.in.info configure -text "$n result[expr {$n == 1 ? {} : {s}}]$extra"
     # keep the steady hint in the left cell when no transient message is active
     if {$::ann::status_after eq "" && [winfo exists .status.in.msg]} {
@@ -1583,10 +1593,134 @@ proc ann::window_candidates {query} {
     return [lmap p [lsort -real -decreasing -index 0 $out] { lindex $p 1 }]
 }
 
+# ---- path mode (gap-analysis #4): directory browsing at typing speed --------
+# A rooted path in the entry switches the box into a live directory listing:
+# the part up to the last separator names the directory, the tail after it
+# fuzzy-filters the listing. Tab completes the top result into the entry
+# (descend); Ctrl+Backspace pops one level; Enter stays the ordinary launch
+# (a folder row opens in Explorer — Tab is the descend, not Enter). Ordering
+# deliberately BYPASSES rank/bucketize, whose cmds→execs→files→dirs nature
+# order is backwards for browsing: directories first, then files; name order
+# (lsort -dictionary) while the tail is empty, fuzzy score on the tail
+# otherwise. Rows are ordinary file/folder dicts, so icons and every panel
+# verb work unchanged. Tcl's glob skips attribute-hidden entries on Windows
+# by default — Explorer's behavior, kept deliberately (dot-named files that
+# are not attribute-hidden DO appear; this is a launcher for engineers).
+#
+# path_parse: "" when the query is not a rooted path, else {dir tail}.
+# Accepts X:\ / X:/ and UNC \\server\share; a leading ~ or %VAR% is expanded
+# first so ~\Desk and %USERPROFILE%\Desk browse too.
+proc ann::path_parse {q} {
+    set q [string trim $q]
+    if {$q eq ""} { return "" }
+    # expand a LEADING ~ or %VAR% only (no general substitution: queries are
+    # not shell strings; this is just how engineers type roots)
+    if {[string index $q 0] eq "~"} {
+        if {[info exists ::env(USERPROFILE)]} {
+            set q "$::env(USERPROFILE)[string range $q 1 end]"
+        }
+    } elseif {[regexp {^%([^%]+)%(.*)$} $q -> var rest]} {
+        if {[info exists ::env($var)]} { set q "$::env($var)$rest" }
+    }
+    # rooted forms only: a drive root (X:\ or X:/) or a UNC path (\\server...)
+    if {![regexp {^[A-Za-z]:[\\/]} $q] && ![regexp {^\\\\[^\\/]} $q]} { return "" }
+    set norm [string map {/ \\} $q]
+    set cut [string last "\\" $norm]
+    set dir  [string range $norm 0 $cut]
+    set tail [string range $norm [expr {$cut + 1}] end]
+    return [list $dir $tail]
+}
+# path_results: the listing rows for one parsed query. Sets ::ann::path_capped.
+proc ann::path_results {dir tail} {
+    set ::ann::path_capped 0
+    # glob needs the directory WITHOUT the trailing separator (except a bare
+    # drive root, where X:\ is required)
+    set gdir [string trimright $dir "\\"]
+    if {[string length $gdir] == 2 && [string index $gdir 1] eq ":"} { set gdir $dir }
+    if {![file isdirectory $gdir]} { return {} }
+    set dirs  [lsort -dictionary [glob -nocomplain -directory $gdir -types d -tails *]]
+    set files [lsort -dictionary [glob -nocomplain -directory $gdir -types f -tails *]]
+    set out {}
+    set n 0
+    foreach {names kind} [list $dirs folder $files file] {
+        foreach name $names {
+            if {$n >= $::ann::PATH_LIST_CAP} { set ::ann::path_capped 1 ; break }
+            set full "$dir$name"
+            if {$tail ne ""} {
+                set s [ann::fuzzy $tail $name]
+                if {$s <= 0} continue
+            } else {
+                set s 0
+            }
+            lappend out [dict create id "path:$full" name $name path $full \
+                kind $kind launch path target $full score $s subtitle $kind]
+            incr n
+        }
+    }
+    if {$tail ne ""} {
+        # fuzzy on the tail re-orders WITHIN the dirs-then-files blocks (stable
+        # lsort keeps the name order among equal scores)
+        set bysc {apply {{a b} {
+            set sa [dict get $a score] ; set sb [dict get $b score]
+            expr {$sb < $sa ? -1 : ($sb > $sa ? 1 : 0)}
+        }}}
+        set d {} ; set f {}
+        foreach r $out {
+            if {[dict get $r kind] eq "folder"} { lappend d $r } else { lappend f $r }
+        }
+        set out [concat [lsort -command $bysc $d] [lsort -command $bysc $f]]
+    }
+    return [lrange $out 0 [expr {$::ann::result_max - 1}]]
+}
+# path_complete (Tab): put the top result into the entry — a folder gets a
+# trailing \ so the NEXT listing opens (descend); a file completes fully.
+proc ann::path_complete {} {
+    if {![llength $::ann::results]} return
+    set r [lindex $::ann::results $::ann::sel]
+    if {![string match "path:*" [dict get $r id]]} return
+    set p [dict get $r path]
+    if {[dict get $r kind] eq "folder"} { append p "\\" }
+    .c.q delete 0 end
+    .c.q insert end $p
+    set ::ann::last_query $p     ;# suppress the on_query no-change guard race
+    ann::do_query
+}
+# path_pop (Ctrl+Backspace): remove the last path segment. Returns 1 when it
+# acted (the binding breaks only then, so the default word-delete survives
+# outside path mode).
+proc ann::path_pop {} {
+    if {!$::ann::path_mode} { return 0 }
+    set q [.c.q get]
+    set norm [string map {/ \\} [string trim $q]]
+    set trimmed [string trimright $norm "\\"]
+    set cut [string last "\\" $trimmed]
+    if {$cut < 2} { return 0 }               ;# at (or above) the root: nothing to pop
+    set up [string range $trimmed 0 $cut]
+    .c.q delete 0 end
+    .c.q insert end $up
+    set ::ann::last_query $up
+    ann::do_query
+    return 1
+}
+
 proc ann::do_query {{mode -reset}} {
     variable reader
     if {![winfo exists .c.q]} return
     set q [.c.q get]
+    # path mode (gap-analysis #4): a rooted path browses instead of searching —
+    # its own ordering, no windows/providers/aliases, no Run fallback row (an
+    # unknown directory simply lists nothing)
+    lassign [ann::path_parse $q] pdir ptail
+    if {$pdir ne ""} {
+        set ::ann::path_mode 1
+        set ::ann::results [ann::path_results $pdir $ptail]
+        set ::ann::sel 0
+        set ::ann::view_offset 0
+        if {$mode ne "-keepsel"} { ann::panel_close }
+        ann::render_results
+        return
+    }
+    if {$::ann::path_mode} { set ::ann::path_mode 0 ; set ::ann::path_capped 0 }
     set keepid ""
     if {$mode eq "-keepsel" && $::ann::sel < [llength $::ann::results]} {
         set keepid [dict get [lindex $::ann::results $::ann::sel] id]
@@ -2222,7 +2356,11 @@ proc ann::key_nav {action} {
         down   { ann::move_sel 1 }
         enter  { ann::launch_selected }
         escape { ann::hide }
-        tab    { ann::panel_toggle }
+        tab    {
+            # the documented mode exception: completion in path mode (shell
+            # convention), the action panel everywhere else (Ctrl+K always)
+            if {$::ann::path_mode} { ann::path_complete } else { ann::panel_toggle }
+        }
     }
     return 1
 }

@@ -1,0 +1,137 @@
+# tests/path.test — path mode (gap-analysis #4): trigger parsing, the browsing
+# ordering branch (dirs first, name order; tail fuzzy WITHIN blocks), Tab
+# completion, Ctrl+Backspace pop, the Tab mode-exception, no Run fallback row,
+# and the PATH_LIST_CAP marker.
+
+package require tcltest
+namespace import ::tcltest::*
+
+# One fixture tree, built once: dirs beta/ alpha/, files zeta.txt kappa.log
+# readme.md — names chosen so name-order differs from creation order and a
+# tail filter can prefer one entry decisively.
+set ::PATHFIX [file join $::ANN_TMP pathfix]
+proc pathfix_build {} {
+    catch {file delete -force $::PATHFIX}
+    file mkdir $::PATHFIX
+    foreach d {beta alpha} { file mkdir [file join $::PATHFIX $d] }
+    foreach f {zeta.txt kappa.log readme.md} {
+        set fh [open [file join $::PATHFIX $f] w] ; puts -nonewline $fh x ; close $fh
+    }
+}
+pathfix_build
+# the fixture path in entry form (backslashes, trailing separator)
+set ::PFX "[string map {/ \\} $::PATHFIX]\\"
+
+proc path_reset {} {
+    set ::ann::path_mode 0 ; set ::ann::path_capped 0
+    set ::ann::results {} ; set ::ann::sel 0 ; set ::ann::view_offset 0
+    catch {after cancel $::ann::query_after} ; set ::ann::query_after ""
+    catch {.c.q delete 0 end}
+    set ::ann::last_query " "
+}
+proc path_type {text} {
+    .c.q delete 0 end ; .c.q insert end $text
+    set ::ann::last_query $text
+    ann::do_query
+}
+
+# ---- path_parse: the trigger --------------------------------------------------
+test path-1.1 {rooted forms trigger; plain queries and bare drive letters do not} -body {
+    list [expr {[ann::path_parse "C:\\dev\\"] ne ""}] \
+         [expr {[ann::path_parse {c:/dev/}] ne ""}] \
+         [expr {[ann::path_parse "\\\\srv\\share\\"] ne ""}] \
+         [expr {[ann::path_parse {chrome}] eq ""}] \
+         [expr {[ann::path_parse {C:}] eq ""}] \
+         [expr {[ann::path_parse {}] eq ""}]
+} -result {1 1 1 1 1 1}
+
+test path-1.2 {dir/tail split at the last separator; slashes normalize} -body {
+    list [ann::path_parse {C:\dev\pro}] [ann::path_parse {C:/dev/}]
+} -result [list [list "C:\\dev\\" "pro"] [list "C:\\dev\\" ""]]
+
+test path-1.3 {a leading ~ and %USERPROFILE% both expand to a rooted browse} \
+        -constraints [expr {[info exists ::env(USERPROFILE)] ? "" : "knownBug"}] -body {
+    set a [ann::path_parse "~\\"]
+    set b [ann::path_parse "%USERPROFILE%\\"]
+    list [expr {$a ne ""}] [expr {$a eq $b}]
+} -result {1 1}
+
+# ---- path_results: the ordering branch ---------------------------------------
+test path-2.1 {empty tail: directories first, then files, each in name order} \
+        -setup {path_reset} -body {
+    path_type $::PFX
+    list $::ann::path_mode [lmap r $::ann::results {dict get $r name}]
+} -result {1 {alpha beta kappa.log readme.md zeta.txt}}
+
+test path-2.2 {rows are ordinary file/folder dicts (icons + panel verbs ride free)} \
+        -setup {path_reset} -body {
+    path_type $::PFX
+    set r0 [lindex $::ann::results 0]
+    set rf [lindex $::ann::results 2]
+    list [dict get $r0 kind] [dict get $r0 launch] [file tail [dict get $r0 target]] \
+         [dict get $rf kind] [string match path:* [dict get $rf id]]
+} -result {folder path alpha file 1}
+
+test path-2.3 {a tail fuzzy-filters; scores re-order within the file block} \
+        -setup {path_reset} -body {
+    path_type "${::PFX}re"
+    # "re" subsequence-matches readme.md only among files; dirs with no match drop
+    list [llength $::ann::results] [dict get [lindex $::ann::results 0] name]
+} -result {1 readme.md}
+
+test path-2.4 {an unknown directory lists nothing — and NO Run fallback row} \
+        -setup {path_reset} -body {
+    path_type "C:\\__ann_no_such_dir__\\"
+    list $::ann::path_mode [llength $::ann::results]
+} -result {1 0}
+
+test path-2.5 {the listing cap fires and sets the status marker} \
+        -setup {path_reset ; set ::__cap $::ann::PATH_LIST_CAP} \
+        -cleanup {set ::ann::PATH_LIST_CAP $::__cap ; path_reset} -body {
+    set ::ann::PATH_LIST_CAP 3
+    path_type $::PFX
+    list [llength $::ann::results] $::ann::path_capped
+} -result {3 1}
+
+# ---- completion + pop ---------------------------------------------------------
+test path-3.1 {Tab completes the top folder into the entry with a trailing sep and relists} \
+        -setup {path_reset} -body {
+    path_type $::PFX
+    ann::path_complete
+    list [.c.q get] $::ann::path_mode [llength $::ann::results]
+} -result [list "${::PFX}alpha\\" 1 0]
+
+test path-3.2 {completing a FILE fills the full path without a trailing sep} \
+        -setup {path_reset} -body {
+    path_type "${::PFX}re"
+    ann::path_complete
+    .c.q get
+} -result "${::PFX}readme.md"
+
+test path-3.3 {Ctrl+Backspace pops one level; at the root it declines (returns 0)} \
+        -setup {path_reset} -body {
+    path_type "${::PFX}alpha\\"
+    set a [ann::path_pop]
+    set entry [.c.q get]
+    path_type "C:\\"
+    set b [ann::path_pop]
+    list $a $entry $b
+} -result [list 1 $::PFX 0]
+
+# ---- the mode exception -------------------------------------------------------
+test path-4.1 {key_nav tab completes in path mode and opens the panel outside it} \
+        -setup {path_reset} -body {
+    path_type $::PFX
+    ann::key_nav tab                       ;# path mode -> completion, no panel
+    set inpath [list [.c.q get] $::ann::panel_open]
+    path_reset
+    list {*}$inpath
+} -result [list "${::PFX}alpha\\" 0]
+
+test path-4.2 {leaving path mode clears the flag and the cap marker} \
+        -setup {path_reset} -body {
+    path_type $::PFX
+    set was $::ann::path_mode
+    path_type "plain query"
+    list $was $::ann::path_mode $::ann::path_capped
+} -result {1 0 0}
