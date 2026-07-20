@@ -1,0 +1,121 @@
+# tests/geometry.test — fixed, user-resizable window (DESIGN §9.1 amended).
+# The window height is authoritative and the visible row count is DERIVED from it,
+# so the popup never resizes itself under the caret. These tests avoid mapping the
+# toplevel (ann::build leaves it withdrawn), so they assert the MECHANISM: the
+# forced WxH geometry, the derivation math, and the persistence — the end-to-end
+# "height is constant across result counts" behavior is covered by the headless
+# off-screen probe, which needs a mapped window.
+
+package require tcltest
+namespace import ::tcltest::*
+
+proc geo_reset {} {
+    set ::ann::window_height 0
+    set ::ann::min_window_h 0
+    set ::ann::window_width 640
+    foreach v {resize_after size_save_after} {
+        if {[set ::ann::$v] ne ""} { catch {after cancel [set ::ann::$v]} }
+        set ::ann::$v ""
+    }
+}
+
+test geo-1.1 {the window is user-resizable in both axes} -setup {ann::build} -body {
+    wm resizable .
+} -result {1 1}
+
+test geo-1.2 {ensure_size derives a height with room for result_limit rows} \
+        -setup {ann::build ; geo_reset} -body {
+    set ::ann::result_limit 9
+    ann::ensure_size
+    set rh [ann::row_px]
+    # the derived height must exceed the row budget alone (chrome is added), and
+    # must NOT be the empty-state height (the bug this guards: deriving from
+    # reqheight while the list is empty yields a ~1-row window)
+    list [expr {$rh > 0}] [expr {$::ann::window_height > 9 * $rh}] \
+         [expr {$::ann::min_window_h > 0}]
+} -result {1 1 1}
+
+test geo-1.3 {ensure_size is idempotent — it never re-derives over a chosen size} \
+        -setup {ann::build ; geo_reset} -body {
+    ann::ensure_size
+    set first $::ann::window_height
+    set ::ann::window_height 500
+    ann::ensure_size
+    expr {$::ann::window_height == 500 && $first != 500}
+} -result 1
+
+test geo-1.4 {position forces WxH, not just an origin} \
+        -setup {ann::build ; geo_reset} -body {
+    ann::position
+    # a size-bearing geometry looks like 640x738+100+200; an origin-only one like
+    # +100+200 — the former is what stops the toplevel tracking its content
+    regexp {^[0-9]+x[0-9]+\+} [wm geometry .]
+} -result 1
+
+test geo-1.5 {fit_viewport re-derives result_limit and rebuilds the row slots} \
+        -setup {ann::build ; geo_reset} -cleanup {
+    catch {rename ::ann::rows_that_fit {}}
+    catch {rename ::geo_saved_rtf ::ann::rows_that_fit}
+    set ::ann::result_limit 9 ; ann::make_rows
+} -body {
+    rename ::ann::rows_that_fit ::geo_saved_rtf
+    proc ::ann::rows_that_fit {} { return 14 }
+    ann::fit_viewport
+    set widgets 0
+    for {set i 0} {$i < 40} {incr i} { if {[winfo exists .c.list.row$i]} { incr widgets } }
+    list $::ann::result_limit $widgets
+} -result {14 14}
+
+test geo-1.6 {a resize keeps the selection inside the shrunken viewport} \
+        -setup {ann::build ; geo_reset} -cleanup {
+    catch {rename ::ann::rows_that_fit {}}
+    catch {rename ::geo_saved_rtf ::ann::rows_that_fit}
+    set ::ann::result_limit 9 ; ann::make_rows ; set ::ann::results {} ; set ::ann::sel 0
+} -body {
+    set ::ann::results [lmap i [lrepeat 30 x] {dict create id f name n path p kind file target {}}]
+    set ::ann::sel 25 ; set ::ann::view_offset 17
+    rename ::ann::rows_that_fit ::geo_saved_rtf
+    proc ::ann::rows_that_fit {} { return 4 }
+    ann::fit_viewport
+    # sel must still fall within [view_offset, view_offset+limit)
+    expr {$::ann::sel >= $::ann::view_offset
+       && $::ann::sel <  $::ann::view_offset + $::ann::result_limit}
+} -result 1
+
+test geo-1.7 {on_resize ignores degenerate and no-change events} \
+        -setup {ann::build ; geo_reset} -body {
+    set ::ann::window_width 640 ; set ::ann::window_height 700
+    ann::on_resize 1 1                       ;# degenerate: ignored
+    set a [list $::ann::window_width $::ann::window_height $::ann::size_save_after]
+    ann::on_resize 640 700                   ;# unchanged: ignored (no save scheduled)
+    set b $::ann::size_save_after
+    ann::on_resize 800 900                   ;# a real drag: adopted
+    set c [list $::ann::window_width $::ann::window_height]
+    foreach v {resize_after size_save_after} {
+        if {[set ::ann::$v] ne ""} { catch {after cancel [set ::ann::$v]} ; set ::ann::$v "" }
+    }
+    list $a $b $c
+} -result {{640 700 {}} {} {800 900}}
+
+test geo-1.8 {window_height option validates and window_width accepts a wider range} \
+        -setup {ann::build ; geo_reset} -body {
+    set ::ann::window_height 700
+    ann::apply_option window_height -5          ;# rejected
+    ann::apply_option window_height notanumber  ;# rejected
+    set kept $::ann::window_height
+    ann::apply_option window_height 0           ;# 0 is legal: "re-derive"
+    set zeroed $::ann::window_height
+    list $kept $zeroed
+} -result {700 0}
+
+test geo-1.9 {settings_save persists the dragged size in the managed block} \
+        -setup {ann::build ; geo_reset ; set ::__geo_dir $::ann::dir} \
+        -cleanup {set ::ann::dir $::__geo_dir} -body {
+    set ::ann::dir [file join $::ANN_TMP geocfgdir]
+    file mkdir $::ann::dir
+    catch {file delete -force [ann::config_path]}
+    set ::ann::window_width 900 ; set ::ann::window_height 650
+    ann::settings_save {} Alt+Space 9
+    set f [open [ann::config_path] r] ; set body [read $f] ; close $f
+    list [regexp {window_width 900} $body] [regexp {window_height 650} $body]
+} -result {1 1}

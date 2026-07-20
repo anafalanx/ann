@@ -38,7 +38,12 @@ namespace eval ann {
     variable last_stats {}             ;# latest indexer stats (statusbar)
     variable last_scan_at ""           ;# HH:MM of the latest catalog update
     variable set_pairs {}              ;# Settings dialog model: {path prio} pairs
-    variable window_width 640          ;# fixed popup width (DESIGN §9.1, §11.4)
+    variable window_width 640          ;# popup width; now the INITIAL size, user-resizable (§9.1)
+    variable window_height 0           ;# popup height; 0 = derive from content once, then fixed
+    variable resize_after ""           ;# debounce: <Configure> -> refit the viewport
+    variable size_save_after ""        ;# debounce: persist the dragged size to the config
+    variable min_window_w 380          ;# resize floor (px); the fit/ellipsis math stays sane below this
+    variable min_window_h 0            ;# computed once from real font metrics (entry + 1 row + status)
     variable indexing 1                ;# cold-start until the first catalog update
     variable aliases {}                ;# normalized-keyword -> catalog path (§6.7, §11.3)
     variable confirm_destructive 1     ;# inline confirm for shutdown/restart/empty-bin (§15.4)
@@ -287,7 +292,12 @@ ann::option frecency_halflife   14           ;# days; how fast habits fade
 ann::option weight_fuzzy        1.0          ;# blend: w_fuzzy * fuzzyScore
 ann::option weight_frecency     0.35         ;#      + w_frec  * norm(frecency)
 ann::option frecency_norm_k     4.0          ;# norm(x) = x/(x+k)
-ann::option window_width        640          ;# popup width in px
+ann::option window_width        640          ;# popup width in px (initial; drag to change)
+# The popup has a FIXED height that never follows the result count — drag the
+# frame to resize and the row count follows the height. Your dragged size is
+# remembered in the managed block at the end of this file. Leave window_height
+# unset (or 0) to derive it from result_limit on first run.
+# ann::option window_height     738
 
 # Folders to scan. These ARE the list — ordinary entries seeded with the
 # Windows-11 startable-item locations; delete any (or all) to stop scanning
@@ -449,9 +459,24 @@ proc ann::apply_option {opt value} {
             if {[winfo exists .c.list]} { ann::render_results }
         }
         window_width {
-            if {[string is integer -strict $value] && $value >= 360 && $value <= 2000} {
+            # now the INITIAL/remembered width — the geometry carries it, not the
+            # spacer (which only pins a minimum content width)
+            if {[string is integer -strict $value] && $value >= 360 && $value <= 4000} {
                 set ::ann::window_width $value
-                if {[winfo exists .c.spacer]} { .c.spacer configure -width [expr {$value - 36}] }
+                if {[winfo exists .c.q] && [winfo ismapped .] && $::ann::window_height > 0} {
+                    catch {wm geometry . "${value}x${::ann::window_height}"}
+                }
+            }
+        }
+        window_height {
+            # authoritative popup height (§9.1 amended): the row count follows it,
+            # not the other way round. 0 means "adopt the natural content height".
+            if {[string is integer -strict $value] && $value >= 0 && $value <= 4000} {
+                set ::ann::window_height $value
+                if {$value > 0 && [winfo exists .c.q] && [winfo ismapped .]} {
+                    catch {wm geometry . "${::ann::window_width}x${value}"}
+                    ann::fit_viewport
+                }
             }
         }
         frecency_halflife {
@@ -716,7 +741,7 @@ proc ann::build {} {
     wm overrideredirect . 0
     wm title . "ann $::ann::version"
     wm attributes . -topmost 1
-    wm resizable . 0 0
+    wm resizable . 1 1         ;# fixed HEIGHT, but the user's to choose (see ann::fit_viewport)
     wm protocol . WM_DELETE_WINDOW ann::hide ;# X hides; quitting stays explicit (§10.2)
     ann::set_window_icon       ;# real ann icon in the titlebar + taskbar (not Tk's feather)
     # The menu lives UNDER the titlebar app icon (annplat::hook_sysmenu) + the
@@ -733,9 +758,10 @@ proc ann::build {} {
     # padding lives on that pack: extra TOP so the field clears the titlebar app
     # icon, small bottom (the docked status bar owns the window's foot).
 
-    # Fixed width by construction: this spacer pins the content width, the
-    # toplevel sizes itself to its content (we never force WxH via wm geometry,
-    # only the position), so the popup grows downward as rows appear (§9.1).
+    # The window is sized by wm geometry (WxH, §9.1 amended): a FIXED height that
+    # never follows the result count, resizable by the user. This spacer is no
+    # longer the width authority — it only pins a sane minimum content width so a
+    # narrow drag cannot collapse the row layout.
     # Chrome typography matches els: Segoe UI. annName/annSub drive the action
     # panel + settings dialog; the result LIST uses its own (smaller) row fonts
     # (annRowName/annRowSub = annName/annSub - 4pt, owner decision); the status
@@ -746,7 +772,7 @@ proc ann::build {} {
     catch {font create annRowName -family "Segoe UI" -size 8}
     catch {font create annRowSub  -family "Segoe UI" -size 5}
     catch {font create annStatus  -family "Segoe UI" -size 8}
-    frame .c.spacer -bg $C(bg) -width [expr {$::ann::window_width - 36}] -height 1
+    frame .c.spacer -bg $C(bg) -width [expr {$::ann::min_window_w - 36}] -height 1
     pack .c.spacer
 
     # flat white field, hairline border, calm-blue focus ring, and els's one red
@@ -800,6 +826,10 @@ proc ann::build {} {
     # bottom edge BEFORE the expanding content frame claims the rest.
     pack .status -side bottom -fill x
     pack .c      -side top    -fill both -expand 1 -padx 18 -pady {22 8}
+
+    # A resize re-derives the viewport. <Configure> fires for EVERY descendant,
+    # so filter to the toplevel or a row rebuild would retrigger itself.
+    bind . <Configure> { if {"%W" eq "."} { ann::on_resize %w %h } }
 
     ann::render_results
     ann::status ""             ;# seed the bar with the default hint
@@ -1111,6 +1141,17 @@ proc ann::resource {name} {
 proc ann::make_rows {} {
     variable C ; variable result_limit
     foreach w [winfo children .c.list] { if {$w ne ".c.list.empty"} { destroy $w } }
+    # Release photo slots above the new limit. The window is resizable now, so
+    # result_limit SHRINKS as well as grows; without this, a shrink would strand
+    # live Tk images and break the §9.4 invariant that only result_limit photos
+    # exist (the row frames above are already destroyed, so nothing references
+    # them). Guarded by the destroy above, never during a render.
+    foreach im [lsearch -all -inline [image names] annimg*] {
+        set idx [string range $im 6 end]
+        if {[string is integer -strict $idx] && $idx >= $result_limit} {
+            catch {image delete $im}
+        }
+    }
     for {set i 0} {$i < $result_limit} {incr i} {
         if {[lsearch [image names] annimg$i] < 0} { image create photo annimg$i }
         set f [frame .c.list.row$i -bg $C(bg)]
@@ -1380,6 +1421,96 @@ proc ann::update_foot {} {
     }
 }
 
+# ---- fixed, user-resizable geometry (§9.1 amended) --------------------------
+# The window no longer sizes itself to its content. Its height is authoritative;
+# the number of visible rows is DERIVED from it, so dragging the frame taller
+# shows more results and the popup never jumps while you type.
+
+# One row's height, measured from the real widget so font size and DPI are
+# accounted for automatically (never a hardcoded pixel count).
+proc ann::row_px {} {
+    if {![winfo exists .c.list.row0]} { return 0 }
+    set h [winfo reqheight .c.list.row0]
+    return [expr {$h > 0 ? $h : 0}]
+}
+# First run (or a config without window_height): adopt the natural content height
+# so the default look is exactly what it was before this change. Also computes the
+# resize floor from live metrics: query entry + one row + status bar + padding.
+proc ann::ensure_size {} {
+    variable window_height ; variable min_window_h
+    if {![winfo exists .c.q]} return
+    if {$window_height > 0 && $min_window_h > 0} return
+    update idletasks
+    # "chrome" = everything that is not the row list (title padding, query entry,
+    # status bar). Measured, not guessed, so DPI and font size are accounted for.
+    # NB: reqheight of . is taken while the list may be EMPTY, so the row budget
+    # must be added explicitly — otherwise the default height is the empty-state
+    # height (~1 row) instead of the intended result_limit rows.
+    set chrome [expr {[winfo reqheight .] - [winfo reqheight .c.list]}]
+    if {$chrome < 0} { set chrome 0 }
+    set rh [ann::row_px]
+    if {$window_height <= 0} {
+        set window_height [expr {$chrome + $::ann::result_limit * $rh}]
+    }
+    if {$min_window_h <= 0} {
+        set min_window_h [expr {$chrome + $rh + 8}]
+        if {$min_window_h < 140} { set min_window_h 140 }
+    }
+    catch {wm minsize . $::ann::min_window_w $min_window_h}
+}
+# How many row slots fit the list viewport right now.
+proc ann::rows_that_fit {} {
+    variable result_limit
+    if {![winfo exists .c.list] || ![winfo ismapped .c.list]} { return $result_limit }
+    set rh [ann::row_px]
+    if {$rh <= 0} { return $result_limit }
+    set avail [winfo height .c.list]
+    if {$avail <= 1} { return $result_limit }
+    set n [expr {int($avail / $rh)}]
+    if {$n < 1}  { set n 1 }
+    if {$n > 60} { set n 60 }     ;# sanity ceiling: 60 live photo slots is plenty
+    return $n
+}
+# Re-derive the viewport from the current height. Rebuilds the row slots only
+# when the count actually changed (a drag fires <Configure> continuously).
+proc ann::fit_viewport {} {
+    variable result_limit ; variable sel ; variable view_offset
+    if {![winfo exists .c.list]} return
+    set n [ann::rows_that_fit]
+    if {$n == $result_limit} return
+    set result_limit $n
+    ann::make_rows
+    # keep the selection visible in the resized viewport
+    if {$sel < $view_offset} { set view_offset $sel }
+    if {$sel >= $view_offset + $result_limit} {
+        set view_offset [expr {$sel - $result_limit + 1}]
+    }
+    if {$view_offset < 0} { set view_offset 0 }
+    ann::render_results
+}
+# <Configure> on the toplevel ONLY (the binding fires for every descendant, so
+# the caller filters on %W). Debounced: refit fast, persist lazily.
+proc ann::on_resize {w h} {
+    variable window_width ; variable window_height
+    variable resize_after ; variable size_save_after
+    if {$w <= 1 || $h <= 1} return
+    if {$w == $window_width && $h == $window_height} return
+    set window_width $w
+    set window_height $h
+    if {$resize_after ne ""} { catch {after cancel $resize_after} }
+    set resize_after [after 40 {set ::ann::resize_after "" ; ann::fit_viewport}]
+    if {$size_save_after ne ""} { catch {after cancel $size_save_after} }
+    set size_save_after [after 900 {set ::ann::size_save_after "" ; ann::persist_size}]
+}
+# Remember the dragged size in the config's managed block (same mechanism as the
+# hide list), so the next launch opens at the size you chose.
+proc ann::persist_size {} {
+    set roots {} ; catch { set roots [annindex::get_roots] }
+    if {[catch {ann::settings_save $roots $::ann::hotkey $::ann::result_limit} e]} {
+        ann::log ERROR "size not persisted: $e"
+    }
+}
+
 proc ann::position {} {
     variable window_width
     set w $window_width
@@ -1388,11 +1519,19 @@ proc ann::position {} {
     } else {
         set rx 0 ; set ry 0 ; set rw [winfo screenwidth .] ; set rh [winfo screenheight .]
     }
+    ann::ensure_size                      ;# first run adopts the natural content height
+    set h $::ann::window_height
     set x [expr {$rx + ($rw - $w) / 2}]
     set y [expr {$ry + int($rh * 0.18)}]
-    # POSITION ONLY — never force a size, so the toplevel keeps sizing itself to
-    # its content and the popup grows/shrinks downward naturally (§9.1).
-    wm geometry . +${x}+${y}
+    # SIZE + POSITION (§9.1 amended): forcing WxH is exactly what stops the
+    # toplevel following its content, so the popup no longer grows and shrinks
+    # under the caret. The user can still drag it; ann::fit_viewport then
+    # re-derives how many rows that height holds.
+    if {$h > 0} {
+        wm geometry . ${w}x${h}+${x}+${y}
+    } else {
+        wm geometry . +${x}+${y}
+    }
 }
 
 proc ann::show {} {
@@ -2482,6 +2621,9 @@ proc ann::settings_save {roots hotkey result_limit} {
     append body "ann::option hotkey [list $hotkey]\n"
     append body "ann::option result_limit [list $result_limit]\n"
     append body "ann::option watched_roots [list $roots]\n"
+    # the size the user dragged the window to (§9.1 amended)
+    if {$::ann::window_width > 0}  { append body "ann::option window_width [list $::ann::window_width]\n" }
+    if {$::ann::window_height > 0} { append body "ann::option window_height [list $::ann::window_height]\n" }
     if {[llength $::ann::hidden]} {
         append body "ann::option ignore_hidden [list $::ann::hidden]\n"
     }

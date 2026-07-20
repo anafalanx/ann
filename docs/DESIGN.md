@@ -721,6 +721,34 @@ One fixed, polished look. No themes, no skins, no layout options.
 
 ### 9.1 The window
 
+> **Amendment (v0.6, by owner decision — "that's not calm enough"): the window
+> has a FIXED, USER-RESIZABLE size; it no longer sizes itself to its content.**
+> Earlier the toplevel took its natural size and the popup grew and shrank
+> downward as rows appeared — so the window changed shape on nearly every
+> keystroke. Now `ann::position` forces `wm geometry WxH+X+Y` (forcing the size
+> is precisely what stops the toplevel tracking its content) and
+> `wm resizable . 1 1` lets the user drag either axis, floored by a `wm minsize`
+> **computed from live font metrics** (query entry + one row + status bar), never
+> a hardcoded pixel count.
+>
+> **The height is authoritative and the row count is derived from it** — the
+> inverse of the old rule. `ann::row_px` measures a real row widget (so DPI and
+> font size are accounted for automatically), `ann::rows_that_fit` divides the
+> list viewport by it, and `ann::fit_viewport` re-derives `result_limit`,
+> rebuilding the virtualized row slots **only when the count actually changed**
+> (a drag fires `<Configure>` continuously). `<Configure>` is bound on the
+> toplevel and filtered on `%W eq "."` — it fires for every descendant, so
+> without the filter a row rebuild would retrigger itself. Resizing therefore
+> shows *more results*, which is the only resize behavior worth having in a
+> launcher.
+>
+> `result_limit` keeps its config meaning (**the initial row budget**) and seeds
+> the derived default height on first run, so an untouched install looks exactly
+> as it did before. Thereafter the size the user drags to wins and is persisted
+> as `window_width` / `window_height` in the config's **managed block** (same
+> mechanism as the hide list), debounced ~900 ms so a drag writes once. The
+> `.c.spacer` frame is demoted from width authority to a mere minimum-width pin.
+
 > **Amendment (v0.1, by owner decision — supersedes the bullets below where they
 > conflict):** the window has a **real titlebar** reading `ann <version>`
 > (`wm overrideredirect 0`, still `-topmost`; the X button hides, quit stays
