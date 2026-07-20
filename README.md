@@ -61,7 +61,7 @@ threading model, and every locked decision: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 `ann` builds with regular z runtime payloads under `..\r\`: MSYS2 UCRT64,
 Tcl/Tk 9, SQLite sources, twapi, and the Tcl/Tk manual. The development layout
-is one maintained `C:\z` workspace with ann hosted at `C:\z\_ann`.
+is one maintained `C:\dev` workspace with ann hosted at `C:\dev\_ann`.
 z provides the build environment; ann keeps its source, `z.json`, generated
 build products, and release `ann.exe`.
 

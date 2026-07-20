@@ -20,7 +20,12 @@ proc script_root {} {
     return [file dirname [file dirname $s]]
 }
 proc zmal_paths {root args} {
-    return [list [file join $root zmal {*}$args] [file join [file dirname $root] zmal {*}$args]]
+    set out {}
+    if {[info exists ::env(Z_HOME)] && $::env(Z_HOME) ne ""} {
+        lappend out [file join $::env(Z_HOME) {*}$args]
+    }
+    lappend out [file join [file dirname $root] .z {*}$args]
+    return $out
 }
 proc discover_tcltk {root} {
     set candidates {}

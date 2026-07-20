@@ -6,7 +6,7 @@ that statically embeds **Tcl/Tk 9.0.3** (GUI + programmable config) and **SQLite
 [`docs/DESIGN.md`](docs/DESIGN.md) — treat it as authoritative for *what* to build
 and *how each subsystem must behave*. This file covers *how to work in the repo*.
 
-`ann` lives as a hosted project under `C:\z\_ann` and builds against
+`ann` lives as a hosted project under `C:\dev\_ann` and builds against
 regular z runtime payloads under `..\r\` - see [`toolchain.md`](toolchain.md).
 It reads those payloads read-only and writes generated outputs inside the
 project. z owns the build environment; ann owns its source, [`z.json`](z.json),

@@ -35,7 +35,7 @@ That keeps the developer boundary clean: invoke `z build`, `z test`, `z x env`,
 and so on. Do not call paths under `..\r`, `..\t`, or `..\s`
 directly from project docs or automation.
 
-From `_ann`, use `..\z.exe <command>` or plain `z <command>` if `C:\z`
+From `_ann`, use `..\z.exe <command>` or plain `z <command>` if `C:\dev`
 is on PATH. From the z workspace root, use `z in ann <command>`.
 
 ## Resolution

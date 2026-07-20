@@ -11,11 +11,13 @@ proc script_root {} {
 }
 proc zmal_paths {root args} {
     set out {}
-    if {[info exists ::env(Z_ROOT)] && $::env(Z_ROOT) ne ""} {
-        lappend out [file join $::env(Z_ROOT) {*}$args]
+    if {[info exists ::env(Z_HOME)] && $::env(Z_HOME) ne ""} {
+        lappend out [file join $::env(Z_HOME) {*}$args]
+    } elseif {[info exists ::env(Z_ROOT)] && $::env(Z_ROOT) ne ""} {
+        lappend out [file join $::env(Z_ROOT) .z {*}$args]
     }
     # Hosted layout: <zmal>/_ann, so the zmal root is the project parent.
-    lappend out [file join [file dirname $root] {*}$args]
+    lappend out [file join [file dirname $root] .z {*}$args]
     # Legacy transition layouts: embedded zmal, or sibling zmal.
     lappend out [file join $root zmal {*}$args] [file join [file dirname $root] zmal {*}$args]
     return $out
