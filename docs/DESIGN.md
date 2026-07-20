@@ -841,7 +841,7 @@ A **single configurable global hotkey** toggles the popup. Default: **`Alt+Space
 
 Toggle semantics: hotkey shows the popup (and forces focus, §9.3) if hidden; hides it if visible. Esc hides; launching a result hides.
 
-### 10.2 Manual-start resident process (no autostart, no tray — locked)
+### 10.2 Manual-start resident process (no autostart — locked; tray: yes, per the amendment)
 
 > **Amendment (v0.1, by owner decision — supersedes the "no tray" paragraph
 > below):** `ann` **does** reside in the system tray (`tk systray`, reversing
@@ -1197,4 +1197,4 @@ A phased roadmap from skeleton to v1. Each milestone ends with the relevant veri
 - Portable single-folder layout; UCRT-dependency note honored (§13.1); MIT/BSD `LICENSE`; release zip.
 - Verify: full run-from-USB on Win10/11; long-running session shows no GDI/handle growth; all §6.6/§14 targets met.
 
-**Post-v1 (explicitly deferred, not promised):** optional Win32 layered-window shim for pixel-perfect shadow; an optional **llvm-mingw** (Clang) CI lane for ASan/UBSan/CFG hardening. **Still never:** web search, calculator, clipboard manager, bookmarks, plugins, autostart, theming, number quick-pick, **system tray** — these remain out of scope (§1 Non-Goals, §10.2).
+**Post-v1 (explicitly deferred, not promised):** optional Win32 layered-window shim for pixel-perfect shadow; an optional **llvm-mingw** (Clang) CI lane for ASan/UBSan/CFG hardening. **Still never:** web search, calculator, clipboard manager, bookmarks, plugins, autostart, theming, number quick-pick — these remain out of scope (§1 Non-Goals). (The system tray was on this list until the §10.2 amendment reversed it: ann now lives in the tray.)
