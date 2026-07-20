@@ -1180,7 +1180,10 @@ proc ann::render_results {} {
                     set st "nocache"
                     catch { set st [annicon::fill annimg$i $spec 32 -cached] }
                     if {$st eq "nocache"} {
-                        catch {annicon::fill annimg$i stock:doc 32}
+                        # kind-matched placeholder: a folder must flash as a
+                        # folder, not a page, while the real icon extracts
+                        set ph [expr {[dict get $r kind] eq "folder" ? "stock:folder" : "stock:doc"}]
+                        catch {annicon::fill annimg$i $ph 32}
                         lappend ::ann::icon_defer [list $i $spec]
                     }
                 }
