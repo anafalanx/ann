@@ -15,6 +15,7 @@ source [file join $here helpers.tcl]
 ::tcltest::testConstraint slow [expr {!$fast}]
 
 foreach f [lsort [glob -nocomplain [file join $here *.test]]] {
+    ::ann_test_baseline   ;# no pending afters / quiet query state from the previous file
     source $f
 }
 

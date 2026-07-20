@@ -83,3 +83,27 @@ proc ::ann::bgerror {msg {opts {}}} { ::ann_test_bgerror $msg }
 # inspect ::tkpopup_calls; the menus themselves are inspected via entrycget.
 set ::tkpopup_calls {}
 proc ::tk_popup {m x y args} { lappend ::tkpopup_calls [list $m $x $y] }
+
+# ---- per-file baseline reset (run.tcl calls this before sourcing each .test) --
+# One file's pending after callbacks must never fire inside a later file: the
+# rows-1.2 incident was history.test's debounced `after 15 ann::do_query`
+# (scheduled via ann::on_query) surviving into icon.test and clobbering
+# ::ann::results mid-assertion. Same lesson as els's helpers.tcl backstop.
+proc ::ann_test_baseline {} {
+    # Named timer tokens first, so their variables go back to the "" idle state
+    # ann's own `ne ""` guards expect.
+    foreach v {query_after status_after reload_after} {
+        catch {after cancel [set ::ann::$v]}
+        set ::ann::$v ""
+    }
+    catch {after cancel $::ann::tip_after ; unset ::ann::tip_after}
+    # Backstop: cancel EVERY pending after (idle fills, icon prefetch, the
+    # anonymous 150/1500 ms one-shots).
+    foreach a [after info] { catch {after cancel $a} }
+    # Quiet query state: empty entry, sentinel last_query (!= "" so the next
+    # on_query requeries), no results.
+    catch {.c.q delete 0 end}
+    set ::ann::last_query " "
+    set ::ann::results {} ; set ::ann::sel 0
+    catch {ann::render_results}
+}
